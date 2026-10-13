@@ -262,12 +262,14 @@ static uint64_t get_symbol(const char* path, const char* name)
     }
 
 	CSSymbolicatorRef symbolicator = __CSSymbolicatorCreateWithPathAndArchitecture(path, CPU_TYPE_ARM64);
-	if (!symbolicator) {
+	// CoreSymbolication's opaque refs are *struct values*, not pointers.
+	// Compare their fields against kCSNull instead of using unary !.
+	if (!symbolicator.csCppData && !symbolicator.csCppObj) {
         dlclose(csHandle);
         return 0;
     }
 	CSSymbolRef symbol = __CSSymbolicatorGetSymbolWithMangledNameAtTime(symbolicator, name, 0);
-	if (!symbol) {
+	if (!symbol.csCppData && !symbol.csCppObj) {
         dlclose(csHandle);
         return 0;
     }

@@ -75,8 +75,13 @@ class RootHideGuardTests(unittest.TestCase):
         source = self.source("BaseBin/libjailbreak/src/roothider/dyld_patch.m")
         self.assertIn("if (!csHandle || !path || !name)", source)
         self.assertIn("if (!__CSSymbolicatorCreateWithPathAndArchitecture ||", source)
-        self.assertIn("if (!symbolicator)", source)
-        self.assertIn("if (!symbol)", source)
+        self.assertIn("if (!symbolicator.csCppData && !symbolicator.csCppObj)", source)
+        self.assertIn("if (!symbol.csCppData && !symbol.csCppObj)", source)
+
+    def test_roothide_blacklist_imports_declared_logger(self) -> None:
+        source = self.source("BaseBin/libjailbreak/src/roothider/blacklist.m")
+        self.assertIn('#include "log.h"', source)
+        self.assertIn("JBLogDebug(", source)
 
     def test_stock_bootstraps_have_pinned_content_hashes(self) -> None:
         script = self.source("Application/Dopamine/Resources/download_bootstraps.sh")

@@ -2,6 +2,7 @@
 
 #include "../libjailbreak.h"
 #include "common.h"
+#include "log.h"
 
 
 #define APP_PATH_PREFIX "/private/var/containers/Bundle/Application/"
