@@ -3,6 +3,7 @@
 #import <libjailbreak/util.h>
 #import <libjailbreak/kernel.h>
 #import <libjailbreak/display.h>
+#import <libjailbreak/roothider.h>
 #import <mach-o/dyld.h>
 #import <os/alloc_once_private.h>
 #import <dlfcn.h>
@@ -161,6 +162,16 @@ __attribute__((constructor)) static void initializer(void)
 	initSpawnHooks();
 	initIPCHooks();
 	initJetsamHook();
+
+	// RootHide's patch daemon is separate from Dopamine 3's hookd. Never
+	// initialize it for a normal /private/preboot Dopamine environment.
+	if (roothide_is_active() &&
+	    access(JBROOT_PATH("/basebin/jailbreakd"), X_OK) == 0) {
+		int rootHideInitStatus = initJailbreakd(firstLoad);
+		if (rootHideInitStatus != 0) {
+			JBLogError("RootHide jailbreakd initialization failed: %d", rootHideInitStatus);
+		}
+	}
 
 	sysctlbyname_orig = sysctlbyname;
 	litehook_rebind_symbol(LITEHOOK_REBIND_GLOBAL, (void *)sysctlbyname, (void *)sysctlbyname_hook, NULL);

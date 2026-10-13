@@ -99,6 +99,17 @@ extern char **environ;
 
 - (void)locateJailbreakRoot
 {
+    if ([DOBootstrapper rootHidePortEnabled]) {
+        if (!gSystemInfo.jailbreakInfo.rootPath) {
+            NSError *error = nil;
+            NSString *root = [DOBootstrapper rootHideExistingRootWithError:&error];
+            if (root && !error) {
+                gSystemInfo.jailbreakInfo.rootPath = strdup(root.fileSystemRepresentation);
+                gSystemInfo.jailbreakInfo.jbrand = [DOBootstrapper rootHideBrandForPath:root];
+            }
+        }
+        return;
+    }
     if (!gSystemInfo.jailbreakInfo.rootPath) {
         NSString *activePrebootPath = [self activePrebootPath];
         
@@ -153,6 +164,17 @@ extern char **environ;
 
 - (NSError *)ensureJailbreakRootExists
 {
+    if ([DOBootstrapper rootHidePortEnabled]) {
+        NSError *error = nil;
+        NSString *root = [DOBootstrapper rootHideExistingRootWithError:&error];
+        if (error) return error;
+        if (root) {
+            gSystemInfo.jailbreakInfo.rootPath = strdup(root.fileSystemRepresentation);
+            gSystemInfo.jailbreakInfo.jbrand = [DOBootstrapper rootHideBrandForPath:root];
+        }
+        // A new hidden root is created by prepareBootstrap, after privilege escalation.
+        return nil;
+    }
     NSError *error = nil;
 
     [self locateJailbreakRoot];

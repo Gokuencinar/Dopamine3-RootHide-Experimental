@@ -25,6 +25,8 @@ static void *gLibSandboxHandle;
 char *JB_BootUUID = NULL;
 char *JB_RootPath = NULL;
 char *get_jbroot(void) { return JB_RootPath; }
+void roothide_prepare_process(const char *root, const char *executable);
+void roothide_trust_injected_libraries(char *const envp[]);
 
 static char gExecutablePath[PATH_MAX];
 static int load_executable_path(void)
@@ -83,6 +85,39 @@ int dyld_hook_routine(void **dyld, int idx, void *hook, void **orig, uint16_t pa
 	}
 
 	return -1;
+}
+
+// The dyld4 vtable layout used by RootHide 2 is known only for iOS 15-17.
+// Keep Dopamine 3's hookd and new dyld layouts unaffected on iOS 18+.
+void *(*dyld_dlopen_orig)(void *, const char *, int);
+void *dyld_dlopen_hook(void *dyld, const char *path, int mode)
+{
+	if (path && !(mode & RTLD_NOLOAD))
+		jbclient_trust_library_recurse(path, __builtin_return_address(0));
+	__attribute__((musttail)) return dyld_dlopen_orig(dyld, path, mode);
+}
+
+void *(*dyld_dlopen_from_orig)(void *, const char *, int, void *);
+void *dyld_dlopen_from_hook(void *dyld, const char *path, int mode, void *caller)
+{
+	if (path && !(mode & RTLD_NOLOAD))
+		jbclient_trust_library_recurse(path, caller);
+	__attribute__((musttail)) return dyld_dlopen_from_orig(dyld, path, mode, caller);
+}
+
+void *(*dyld_dlopen_audited_orig)(void *, const char *, int);
+void *dyld_dlopen_audited_hook(void *dyld, const char *path, int mode)
+{
+	if (path && !(mode & RTLD_NOLOAD))
+		jbclient_trust_library_recurse(path, __builtin_return_address(0));
+	__attribute__((musttail)) return dyld_dlopen_audited_orig(dyld, path, mode);
+}
+
+bool (*dyld_dlopen_preflight_orig)(void *, const char *);
+bool dyld_dlopen_preflight_hook(void *dyld, const char *path)
+{
+	if (path) jbclient_trust_library_recurse(path, __builtin_return_address(0));
+	__attribute__((musttail)) return dyld_dlopen_preflight_orig(dyld, path);
 }
 
 // dlsym calls use __builtin_return_address(0) to determine what library called it
@@ -200,6 +235,10 @@ bool should_enable_tweaks(void)
 	if (access(JBROOT_PATH("/basebin/.safe_mode"), F_OK) == 0) {
 		return false;
 	}
+	const char *safeMode = getenv("_SafeMode");
+	const char *msSafeMode = getenv("_MSSafeMode");
+	if ((safeMode && !strcmp(safeMode, "1")) ||
+		(msSafeMode && !strcmp(msSafeMode, "1"))) return false;
 
 	char *tweaksDisabledEnv = getenv("DISABLE_TWEAKS");
 	if (tweaksDisabledEnv) {
@@ -240,17 +279,29 @@ bool should_enable_tweaks(void)
 
 int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char * const envp[restrict])
 {
+	if (path && jbclient_roothide_jailbroken() && !jbclient_dyld_patch_enabled()) {
+		jbclient_trust_executable_recurse(path, NULL);
+		roothide_trust_injected_libraries(envp);
+	}
 	return posix_spawn_hook_shared(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, jbclient_trust_file_by_path, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
 }
 
 int __posix_spawn_hook_with_filter(pid_t *restrict pid, const char *restrict path, char *const argv[restrict], char * const envp[restrict], struct _posix_spawn_args_desc *desc, int *ret)
 {
+	if (path && jbclient_roothide_jailbroken() && !jbclient_dyld_patch_enabled()) {
+		jbclient_trust_executable_recurse(path, NULL);
+		roothide_trust_injected_libraries(envp);
+	}
 	*ret = posix_spawn_hook_shared(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, jbclient_trust_file_by_path, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
 	return 1;
 }
 
 int __execve_hook(const char *path, char *const argv[], char *const envp[])
 {
+	if (path && jbclient_roothide_jailbroken() && !jbclient_dyld_patch_enabled()) {
+		jbclient_trust_executable_recurse(path, NULL);
+		roothide_trust_injected_libraries(envp);
+	}
 	return execve_hook_shared(path, argv, envp, (void *)__execve_inline, jbclient_trust_file_by_path);
 }
 
@@ -433,6 +484,12 @@ __attribute__((constructor)) static void initializer(void)
 	if (gDyldPtr) {
 		// TODO: Maybe we can just rebind sandbox_apply instead?
 		dyld_hook_routine(*gDyldPtr, 17, (void *)&dyld_dlsym_hook, (void **)&dyld_dlsym_orig, 0x839D);
+		if (!__builtin_available(iOS 18.0, *) && jbclient_roothide_jailbroken()) {
+			dyld_hook_routine(*gDyldPtr, 14, (void *)&dyld_dlopen_hook, (void **)&dyld_dlopen_orig, 0xBF31);
+			dyld_hook_routine(*gDyldPtr, 18, (void *)&dyld_dlopen_preflight_hook, (void **)&dyld_dlopen_preflight_orig, 0xB1B6);
+			dyld_hook_routine(*gDyldPtr, 97, (void *)&dyld_dlopen_from_hook, (void **)&dyld_dlopen_from_orig, 0xD48C);
+			dyld_hook_routine(*gDyldPtr, 98, (void *)&dyld_dlopen_audited_hook, (void **)&dyld_dlopen_audited_orig, 0xD2A5);
+		}
 	} else {
 		void ***gAPIsPtr = litehook_find_dsc_symbol("/usr/lib/system/libdyld.dylib", "__ZN5dyld45gAPIsE");
 		if (gAPIsPtr) {
@@ -448,12 +505,17 @@ __attribute__((constructor)) static void initializer(void)
 	}
 #endif
 
-	if (load_executable_path() == 0) {
-		// Load rootlesshooks / watchdoghook when neccessary
+		if (load_executable_path() == 0) {
+			roothide_prepare_process(JB_RootPath, gExecutablePath);
+			// Load rootlesshooks / watchdoghook when neccessary
 		if (!strcmp(gExecutablePath, "/usr/sbin/cfprefsd") ||
 			!strcmp(gExecutablePath, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
 			!strcmp(gExecutablePath, "/usr/libexec/lsd")) {
-			dlopen(JBROOT_PATH("/basebin/rootlesshooks.dylib"), RTLD_NOW);
+				const char *roothideHooks = JBROOT_PATH("/basebin/roothidehooks.dylib");
+				if (jbclient_roothide_jailbroken() && roothideHooks && access(roothideHooks, R_OK) == 0)
+					dlopen(roothideHooks, RTLD_NOW);
+				else
+					dlopen(JBROOT_PATH("/basebin/rootlesshooks.dylib"), RTLD_NOW);
 		}
 		else if (!strcmp(gExecutablePath, "/usr/libexec/watchdogd")) {
 			dlopen(JBROOT_PATH("/basebin/watchdoghook.dylib"), RTLD_NOW);
@@ -483,10 +545,9 @@ __attribute__((constructor)) static void initializer(void)
 		}
 #endif
 		// Load tweaks if desired
-		// We can hardcode /var/jb here since if it doesn't exist, loading TweakLoader.dylib is not going to work anyways
-		if (should_enable_tweaks()) {
-			const char *tweakLoaderPath = "/var/jb/usr/lib/TweakLoader.dylib";
-			if (access(tweakLoaderPath, F_OK) == 0) {
+			if (should_enable_tweaks()) {
+				const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
+				if (tweakLoaderPath && access(tweakLoaderPath, F_OK) == 0) {
 				void *tweakLoaderHandle = dlopen(tweakLoaderPath, RTLD_NOW);
 				if (tweakLoaderHandle != NULL) {
 					dlclose(tweakLoaderHandle);

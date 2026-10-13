@@ -9,7 +9,7 @@
 
 all: basebin.tar
 
-subprojects: ChOma XPF MachOMerger opainject libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks dopamine
+subprojects: ChOma XPF MachOMerger opainject libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks roothidehooks jailbreakd bootstrapper dopamine
 
 ChOma: .build .include
 	@$(MAKE) -C ChOma TARGET=ios DISABLE_SIGNING=1 DISABLE_TESTS=1 DYLIB_LDFLAGS="-install_name @loader_path/libchoma.dylib"
@@ -37,6 +37,8 @@ libjailbreak: .build .include ChOma
 	@cp libjailbreak/libjailbreak.dylib .build
 	@mkdir -p .include/libjailbreak
 	@cp libjailbreak/src/*.h .include/libjailbreak
+	@mkdir -p .include/libjailbreak/roothider
+	@cp libjailbreak/src/roothider/*.h .include/libjailbreak/roothider
 
 systemhook: .build .include libjailbreak
 	$(MAKE) -C systemhook
@@ -73,6 +75,20 @@ watchdoghook: .build .include libjailbreak
 rootlesshooks: .build .include libjailbreak
 	$(MAKE) -C rootlesshooks
 	@cp rootlesshooks/.theos/obj/rootlesshooks.dylib .build
+
+# These RootHide components coexist with Dopamine 3's hookd and rootlesshooks;
+# hiding is not activated unless the hidden bootstrap state is initialized.
+roothidehooks: .build .include libjailbreak
+	$(MAKE) -C roothidehooks
+	@cp roothidehooks/.theos/obj/roothidehooks.dylib .build
+
+jailbreakd: .build .include libjailbreak
+	$(MAKE) -C jailbreakd
+	@cp jailbreakd/jailbreakd .build
+
+bootstrapper: .build .include libjailbreak
+	$(MAKE) -C bootstrapper
+	@cp bootstrapper/bootstrapper .build
 
 dopamine: .build .include libjailbreak XPF ChOma
 	$(MAKE) -C dopamine
@@ -120,6 +136,9 @@ clean:
 	@$(MAKE) -C idownloadd $@
 	@$(MAKE) -C watchdoghook $@
 	@$(MAKE) -C rootlesshooks $@
+	@$(MAKE) -C roothidehooks $@
+	@$(MAKE) -C jailbreakd $@
+	@$(MAKE) -C bootstrapper $@
 	@$(MAKE) -C dyldhook $@
 	@$(MAKE) -C dopamine $@
 	@$(MAKE) -C hookd $@
@@ -128,4 +147,4 @@ clean:
 	@rm -rf basebin.tar
 	@rm -rf basebin.tc
 
-.PHONY: clean .build .include ChOma XPF MachOMerger opainject libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks basebin.tc dyldhook basebin.tar
+.PHONY: clean .build .include ChOma XPF MachOMerger opainject libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks roothidehooks jailbreakd bootstrapper basebin.tc dyldhook basebin.tar

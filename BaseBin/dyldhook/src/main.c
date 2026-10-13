@@ -108,6 +108,11 @@ void dyldhook_init(uintptr_t kernelParams)
 {
 	mach_init_4real();
 
+	// The RootHide dyld4 loader redirection uses the already checked-in
+	// jailbreak root. It does not replace Dopamine 3's Mach check-in.
+	extern void dyldhook_init_roothide(uintptr_t kernelParams);
+	dyldhook_init_roothide(kernelParams);
+
 	// If we are in launchd, bail out
 	if (getpid() == 1) {
 		return;

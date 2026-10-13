@@ -62,22 +62,33 @@ def inspect() -> list[dict]:
             ("Application/Dopamine/Jailbreak/DOBootstrapper.m",),
             (
                 ("Application/Dopamine/Jailbreak/DOBootstrapper.m", ".jbroot-"),
-                ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "jbrand_"),
+                ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "RH3NewBrand"),
+                ("Application/Dopamine/Jailbreak/DOEnvironmentManager.m", "rootHideBrandForPath"),
             ),
         ),
         require(
-            "RootHide process and dyld integration",
+            "Dopamine 3-compatible RootHide process and dyld integration",
             (
-                "BaseBin/systemhook/src/roothider_main.c",
+                "BaseBin/systemhook/src/roothider_port.c",
                 "BaseBin/dyldhook/src/roothider.c",
                 "BaseBin/dyldhook/src/roothider.S",
             ),
-            (("BaseBin/systemhook/src/main.c", "roothide_init"),),
+            (
+                ("BaseBin/systemhook/src/main.c", "roothide_prepare_process"),
+                ("BaseBin/dyldhook/src/main.c", "dyldhook_init_roothide"),
+            ),
         ),
         require(
-            "RootHide launchd integration",
-            ("BaseBin/launchdhook/src/roothider.m",),
-            (("BaseBin/launchdhook/src/main.m", "roothide_launchd_preinit"),),
+            "RootHide launchd and IPC integration",
+            (
+                "BaseBin/launchdhook/src/jbserver/jbdomain_roothide.c",
+                "BaseBin/jailbreakd/src/server.m",
+            ),
+            (
+                ("BaseBin/launchdhook/src/main.m", "initJailbreakd(firstLoad)"),
+                ("BaseBin/launchdhook/src/spawn_hook.c", "commitBlacklistProcessId"),
+                ("BaseBin/libjailbreak/src/roothider/common.m", "roothide_is_active"),
+            ),
         ),
         require(
             "Filesystem and package-manager hooks",
@@ -96,6 +107,13 @@ def inspect() -> list[dict]:
             (
                 ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "roothideapp.deb"),
                 ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "roothide.github.io"),
+            ),
+        ),
+        require(
+            "Explicit RootHide activation gate",
+            ("Application/Dopamine/Jailbreak/DOBootstrapper.m",),
+            (
+                ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "#define ROOTHIDE3_BOOTSTRAP_READY 1"),
             ),
         ),
     ]

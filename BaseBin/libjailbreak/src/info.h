@@ -40,9 +40,14 @@ struct system_info {
 	} kernelConstant;
 
 	struct {
-		uint64_t usesPACBypass;
-		char *rootPath;
-		char *appIdentifier;
+			uint64_t usesPACBypass;
+			char *rootPath;
+			char *appIdentifier;
+			// RootHide metadata is transported with the existing system-info
+			// serialization. It must be initialized before runtime hooks are used.
+			uint64_t jbrand;
+			uint64_t palera1n;
+			bool dyld_patch_enabled;
 	} jailbreakInfo;
 
 	struct {
@@ -73,7 +78,13 @@ struct system_info {
 		// Variables
 		uint64_t perfmon_devices;
 		uint64_t cdevsw;
-		uint64_t allproc;
+			uint64_t allproc;
+			// Required by the RootHide vnode/namecache implementation; must be
+			// resolved for the running kernel before that implementation is enabled.
+			uint64_t nchashtbl;
+			uint64_t nchashmask;
+			uint64_t developer_mode_status;
+			uint64_t launch_env_logging;
 		uint64_t gPhysBase;
 		uint64_t gPhysSize;
 		uint64_t gVirtBase;
@@ -410,7 +421,10 @@ extern struct system_info gSystemInfo;
 #define JAILBREAK_INFO_ITERATE(ctx, iterator) \
 	iterator(ctx, jailbreakInfo.usesPACBypass); \
 	iterator(ctx, jailbreakInfo.rootPath); \
-	iterator(ctx, jailbreakInfo.appIdentifier);
+	iterator(ctx, jailbreakInfo.appIdentifier); \
+	iterator(ctx, jailbreakInfo.jbrand); \
+	iterator(ctx, jailbreakInfo.palera1n); \
+	iterator(ctx, jailbreakInfo.dyld_patch_enabled);
 
 #define JAILBREAK_SETTINGS_ITERATE(ctx, iterator) \
 	iterator(ctx, jailbreakSettings.markAppsAsDebugged); \
@@ -438,6 +452,10 @@ extern struct system_info gSystemInfo;
 	iterator(ctx, kernelSymbol.perfmon_devices); \
 	iterator(ctx, kernelSymbol.cdevsw); \
 	iterator(ctx, kernelSymbol.allproc); \
+	iterator(ctx, kernelSymbol.nchashtbl); \
+	iterator(ctx, kernelSymbol.nchashmask); \
+	iterator(ctx, kernelSymbol.developer_mode_status); \
+	iterator(ctx, kernelSymbol.launch_env_logging); \
 	iterator(ctx, kernelSymbol.gPhysBase); \
 	iterator(ctx, kernelSymbol.gPhysSize); \
 	iterator(ctx, kernelSymbol.gVirtBase); \

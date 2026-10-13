@@ -1,6 +1,21 @@
 #include "jbserver.h"
 #include "util.h"
 
+// All action tables are terminated by a sentinel, but their storage is not
+// dynamically sized. Validate the requested index before indexing a table.
+static uint64_t jbserver_last_action_for_domain(uint64_t domain)
+{
+	switch (domain) {
+		case JBS_DOMAIN_SYSTEMWIDE: return JBS_SYSTEMWIDE_PERSONA_FIX;
+		case JBS_DOMAIN_PLATFORM:   return JBS_PLATFORM_SET_SYSTEMWIDE_DOMAIN_ENABLED;
+		case JBS_DOMAIN_WATCHDOG:   return JBS_WATCHDOG_GET_LAST_USERSPACE_PANIC;
+		case JBS_DOMAIN_ROOT:       return JBS_ROOT_TRUSTCACHE_CLEAR;
+		case JBS_DOMAIN_DOPAMINE:   return JBS_DOPAMINE_DROP_ROOT;
+		case JBS_DOMAIN_ROOTHIDE:   return JBS_ROOTHIDE_DYLD_PATCH_ENABLED_SET;
+		default: return 0;
+	}
+}
+
 int jbserver_received_xpc_message(struct jbserver_impl *server, xpc_object_t xmsg)
 {
 	if (xpc_get_type(xmsg) != XPC_TYPE_DICTIONARY) return -1;
@@ -9,7 +24,7 @@ int jbserver_received_xpc_message(struct jbserver_impl *server, xpc_object_t xms
 	if (!xpc_dictionary_get_value(xmsg, "action")) return -1;
 
 	uint64_t domainIdx = xpc_dictionary_get_uint64(xmsg, "jb-domain");
-	if (domainIdx == 0) return -1;
+	if (domainIdx == 0 || domainIdx > server->maxDomain) return -1;
 	struct jbserver_domain *domain = server->domains[0];
 	for (int i = 1; i < domainIdx && domain; i++) {
 		domain = server->domains[i];
@@ -24,7 +39,7 @@ int jbserver_received_xpc_message(struct jbserver_impl *server, xpc_object_t xms
 	}
 
 	uint64_t actionIdx = xpc_dictionary_get_uint64(xmsg, "action");
-	if (actionIdx == 0) return -1;
+	if (actionIdx == 0 || actionIdx > jbserver_last_action_for_domain(domainIdx)) return -1;
 	struct jbserver_action *action = &domain->actions[0];
 	for (int i = 1; i < actionIdx && action->handler; i++) {
 		action = &domain->actions[i];

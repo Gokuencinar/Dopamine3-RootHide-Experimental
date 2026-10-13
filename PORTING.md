@@ -16,14 +16,45 @@ The public RootHide 3.x branch contains no RootHide implementation commits
 relative to its Dopamine 3 ancestor; its only fork-specific commit empties
 `README.md`. The RootHide 2.x implementation cannot be transplanted unchanged.
 
+## Local experimental progress (13 October 2026)
+
+This branch now carries the RootHide 2 IPC client, process/blacklist/trust
+sources, dyld loader hook candidates, package-manager hooks, and experimental
+launchd integration alongside Dopamine 3's existing hookd/rootlesshooks.
+It also includes the two RootHide bootstrap archives and the Sileo, Zebra,
+and RootHide Manager packages. All five assets are SHA-256-pinned and attached
+to the iOS application target. This is **not a compiled or working jailbreak**.
+
+The RootHide IPC domain is isolated as ID `6`, and the XPC dispatcher now
+rejects out-of-range domain and action indices. RootHide activation is tied
+to a nonzero `jbrand` and a hidden `.jbroot-*` root path; that state is not
+initialized by the stock Dopamine 3 bootstrap. Unresolved kernel offsets are
+guarded where identified rather than used as kernel addresses.
+
+The experimental RootHide bootstrap uses `.jbroot-<brand>` and a separate
+AppGroup, rather than overwriting Dopamine's `/var/jb`; it rejects
+unrecognized and incomplete installs, offers rollback, and installs RootHide
+repositories and managers. It is **disabled by default** with
+`ROOTHIDE3_BOOTSTRAP_READY=0`; stock Dopamine continues to use its original
+Procursus path. The experimental path is deliberately limited to iOS 15/16;
+iOS 17+ is rejected until separately ported.
+
+**Remaining blockers:** The 3.x integration of RootHide 2 kernel/dyld
+patches, code-signing/trust handling, bootstrap dependencies and jailbroken
+runtime has not been compiled or tested. Some offsets required by the donor
+are absent from Dopamine 3's kernel patchfinder and are guarded instead of
+being used unchecked. RootHide's executable `bootstrapper` in the donor
+was only a placeholder. The source audit reports 7 of 8 prerequisites;
+the final activation check deliberately remains false. Enabling it based on
+source presence alone would be unsafe. No RootHide IPA/TIPA has been built.
+
 ## Integration boundaries
 
 1. **IPC and authorization.** Dopamine 3 reserves domain ID `5` for
    `JBS_DOMAIN_DOPAMINE`; RootHide 2 uses `5` for `JBS_DOMAIN_ROOTHIDE`.
-   RootHide domain ID `6` and its operation numbers have been reserved in
-   `jbserver_domains.h`, but no RootHide handler is registered. Port and test
-   client/server dispatch and authorization checks before enabling it;
-   unprivileged clients must not invoke privileged actions.
+	 RootHide uses domain ID `6` with a distinct server handler. Validate the
+	 caller and operation permissions and test denial paths on hardware before
+	 exposing privileged requests.
 2. **Shared jailbreak state.** Preserve Dopamine 3 `info.h` state, kernel
    offsets and SPTM/TXM code while integrating RootHide `jbrand`, trust,
    dyld-patching and blacklist state. Check serialization and rollback.
@@ -49,9 +80,12 @@ python3 tools/roothide_port_audit.py
 python3 tools/roothide_port_audit.py --strict
 ```
 
-The first command prints missing source prerequisites; `--strict` exits
-with code `2` until the source integrations are present. It is deliberately
-not a functionality test, and source completion is only the first gate.
+The first command prints source prerequisites; `--strict` exits nonzero
+until the opt-in RootHide bootstrap has explicitly been enabled after device
+validation. It deliberately blocks publication of an ordinary Dopamine IPA
+as a RootHide release. Run `python3 -m unittest discover -s tools/tests` to
+verify the IPC and source guard regressions. Neither check proves runtime
+correctness or installation safety.
 
 The next gates require a macOS build with Xcode, Theos, SDK, submodules and
 RootHide-specific packages; inspection of the resulting `.tipa`, basebin

@@ -11,6 +11,8 @@
 #include <litehook.h>
 #include "jbserver/jbserver_local.h"
 #include "hookd_provider.h"
+#include <libjailbreak/roothider.h>
+#include <errno.h>
 extern char **environ;
 
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
@@ -18,6 +20,35 @@ void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const ch
 extern int systemwide_trust_file_by_path(const char *path);
 extern int platform_set_process_debugged(uint64_t pid, bool fullyDebugged);
 extern void systemwide_domain_set_enabled(bool enabled);
+
+int __posix_spawn_orig_wrapper(pid_t *restrict pid, const char *restrict path,
+                              struct _posix_spawn_args_desc *desc,
+                              char *const argv[restrict],
+                              char *const envp[restrict]);
+
+// A blacklisted process must not inherit the jailbreak's injected libraries.
+// Keep the original spawn flags and preserve unrelated environment entries.
+static int roothide_spawn_uninjected(pid_t *pid, const char *path,
+                                    struct _posix_spawn_args_desc *desc,
+                                    char *const argv[restrict],
+                                    char *const envp[restrict])
+{
+	if (!envp) return __posix_spawn_orig_wrapper(pid, path, desc, argv, envp);
+	size_t count = 0;
+	while (envp[count]) {
+		if (++count > 4096) return E2BIG;
+	}
+	char **filtered = calloc(count + 1, sizeof(char *));
+	if (!filtered) return ENOMEM;
+	size_t len = 0;
+	for (size_t i = 0; i < count; i++) {
+		if (strncmp(envp[i], "DYLD_INSERT_LIBRARIES=", 22) == 0) continue;
+		filtered[len++] = envp[i];
+	}
+	int result = __posix_spawn_orig_wrapper(pid, path, desc, argv, filtered);
+	free(filtered);
+	return result;
+}
 
 #define LOG_PROCESS_LAUNCHES 0
 
@@ -189,6 +220,18 @@ int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path,
 		}
 	}
 
+	// Blacklisted apps are launched without tweak injection. Their identifiers
+	// are read from the RootHide configuration under the active jailbreak root.
+	if (path && roothide_is_active() && isBlacklistedPath(path)) {
+		// Record the child PID before its first userspace instructions execute;
+		// the server uses this record to deny RootHide IPC to the child.
+		pid_t *trackedPid = allocBlacklistProcessId();
+		if (!trackedPid) return ENOMEM;
+		int result = roothide_spawn_uninjected(trackedPid, path, desc, argv, envp);
+		if (pid && result == 0) *pid = *trackedPid;
+		commitBlacklistProcessId(trackedPid);
+		return result;
+	}
 	return posix_spawn_hook_shared(pid, path, desc, argv, envp, __posix_spawn_orig_wrapper, systemwide_trust_file_by_path, platform_set_process_debugged, jbsetting(jetsamMultiplier));
 }
 

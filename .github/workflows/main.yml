@@ -37,11 +37,6 @@ jobs:
         with:
             submodules: recursive
 
-      # Never publish a stock Dopamine IPA as a RootHide build while the port is incomplete.
-      - name: Check RootHide port prerequisites
-        if: startsWith(github.ref_name, 'roothide-')
-        run: python3 tools/roothide_port_audit.py --strict
-
       - name: Install Procursus
         uses: dhinakg/procursus-action@main
         with:
@@ -58,7 +53,13 @@ jobs:
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
           mkdir -p $THEOS
-          curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos >> install-theos.sh
+          # The RootHide tweak targets use a different Theos package scheme.
+          # Keep official Theos for the upstream Dopamine branches.
+          THEOS_REPO=theos/theos
+          if [[ "$GITHUB_REF_NAME" == roothide-* ]]; then
+            THEOS_REPO=roothide/theos
+          fi
+          curl -fsSL "https://raw.githubusercontent.com/${THEOS_REPO}/master/bin/install-theos" -o install-theos.sh
           gsed -E "/^\s*get_theos\s*$/,+1 s/^(\s*)(get_sdks)\s*$/\1mkdir -p \${THEOS}\/sdks\n\1touch \${THEOS}\/sdks\/sdk\n\1\2/g" -i install-theos.sh
           bash install-theos.sh
           curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
@@ -103,6 +104,12 @@ jobs:
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
           gmake -j$(sysctl -n hw.logicalcpu) NIGHTLY=1
+
+      # Compile first so early RootHide port errors are visible in CI, but
+      # never upload an unverified stock artifact as a RootHide release.
+      - name: Check RootHide port prerequisites before upload
+        if: startsWith(github.ref_name, 'roothide-')
+        run: python3 tools/roothide_port_audit.py --strict
 
       - name: Upload Artifact
         id: dopamine-latest-upload
