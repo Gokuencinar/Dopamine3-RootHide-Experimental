@@ -20,9 +20,10 @@ relative to its Dopamine 3 ancestor; its only fork-specific commit empties
 
 1. **IPC and authorization.** Dopamine 3 reserves domain ID `5` for
    `JBS_DOMAIN_DOPAMINE`; RootHide 2 uses `5` for `JBS_DOMAIN_ROOTHIDE`.
-   Preserve existing Dopamine requests, assign RootHide a unique domain,
-   update all client/server dispatch and authorization checks, and test that
-   unprivileged clients cannot invoke privileged actions.
+   RootHide domain ID `6` and its operation numbers have been reserved in
+   `jbserver_domains.h`, but no RootHide handler is registered. Port and test
+   client/server dispatch and authorization checks before enabling it;
+   unprivileged clients must not invoke privileged actions.
 2. **Shared jailbreak state.** Preserve Dopamine 3 `info.h` state, kernel
    offsets and SPTM/TXM code while integrating RootHide `jbrand`, trust,
    dyld-patching and blacklist state. Check serialization and rollback.

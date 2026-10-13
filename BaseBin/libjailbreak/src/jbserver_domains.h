@@ -57,6 +57,22 @@ enum {
     JBS_DOPAMINE_DROP_ROOT,
 };
 
+// Reserved for the RootHide port. Its 2.x implementation used domain 5,
+// which now belongs to Dopamine app-only actions. No RootHide requests are
+// exposed until the corresponding server and authorization checks are ported.
+#define JBS_DOMAIN_ROOTHIDE 6
+enum {
+    JBS_ROOTHIDE_JAILBROKEN_CHECK = 1,
+    JBS_ROOTHIDE_PALEHIDE_PRESENT,
+    JBS_ROOTHIDE_BLACKLIST_CHECK,
+    JBS_ROOTHIDE_JAILBREAKD_LOOKUP,
+    JBS_ROOTHIDE_JAILBREAKD_CHECKIN,
+    JBS_ROOTHIDE_TRUST_LIBRARY_RECURSE,
+    JBS_ROOTHIDE_TRUST_EXECUTABLE_RECURSE,
+    JBS_ROOTHIDE_DYLD_PATCH_ENABLED_GET,
+    JBS_ROOTHIDE_DYLD_PATCH_ENABLED_SET,
+};
+
 #define JBS_BOOMERANG_DONE 42
 
 #endif

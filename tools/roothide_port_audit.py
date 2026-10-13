@@ -40,6 +40,8 @@ def ipc_domain_check() -> dict:
     for number, names in by_id.items():
         if len(names) > 1:
             problems.append(f"IPC domain number {number} is shared: {', '.join(names)}")
+    if "gRootHideDomain" not in read("BaseBin/launchdhook/src/jbserver/jbserver_global.c"):
+        problems.append("Wire an authorized RootHide server domain before enabling the client")
     return {"component": "XPC domain separation", "ready": not problems, "missing": problems}
 
 
