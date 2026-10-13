@@ -31,6 +31,7 @@
 #import <libjailbreak/jbclient_mach.h>
 #import <libjailbreak/kcall_arm64.h>
 #import <libjailbreak/basebin_gen.h>
+#import <libjailbreak/roothider/common.h>
 #import <CoreServices/LSApplicationProxy.h>
 #import <sys/utsname.h>
 #import "spawn.h"
@@ -675,21 +676,42 @@ void *boomerang_server(struct boomerang_info *info)
     // After the launchd hook is initialized, we need to make the app believe the device is jailbroken
     [[DOEnvironmentManager sharedManager] setJailbroken:YES withVersion:[NSString stringWithContentsOfFile:JBROOT_PATH(@"/basebin/.version") encoding:NSUTF8StringEncoding error:nil]];
     
-    // Now that we can, protect important system files by bind mounting on top of them
-    // This will be always be done during the userspace reboot
-    // We also do it now though in case there is a failure between the now step and the userspace reboot
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Protection") debug:NO];
-    *errOut = [self applyProtection];
-    if (*errOut) {
-        [self cleanUpPostExploitation];
-        return;
+    if ([DOBootstrapper rootHidePortEnabled]) {
+        // RootHide does not use stock Dopamine's /usr/lib fakelib mount or
+        // /private/preboot protection. Keep that path intact for Dopamine.
+        [[DOUIManager sharedInstance] sendLog:@"Initializing RootHide dyld support" debug:NO];
+        int result = basebin_generate(false);
+        if (result == 0) {
+            result = ensure_dyld_trustcache(JBROOT_PATH("/basebin/.fakelib/dyld"));
+        }
+        if (result != 0) {
+            *errOut = [NSError errorWithDomain:JBErrorDomain
+                                         code:JBErrorCodeFailedInitFakeLib
+                                     userInfo:@{NSLocalizedDescriptionKey :
+                                         [NSString stringWithFormat:@"RootHide dyld initialization failed (%d)", result]}];
+            [self cleanUpPostExploitation];
+            return;
+        }
+        exec_set_patch(true);
+        setenv("DYLD_IN_CACHE", "0", 1);
+        setenv("DISABLE_TWEAKS", "1", 1);
+        setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
     }
-    
-    [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
-    *errOut = [self createFakeLib];
-    if (*errOut) {
-        [self cleanUpPostExploitation];
-        return;
+    else {
+        // Preserve Dopamine 3's conventional protection and fakelib behavior.
+        [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Initializing Protection") debug:NO];
+        *errOut = [self applyProtection];
+        if (*errOut) {
+            [self cleanUpPostExploitation];
+            return;
+        }
+
+        [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
+        *errOut = [self createFakeLib];
+        if (*errOut) {
+            [self cleanUpPostExploitation];
+            return;
+        }
     }
     
     // Unsandbox iconservicesagent so that app icons can work

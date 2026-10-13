@@ -659,11 +659,17 @@ extern char **environ;
 
 - (BOOL)isJailbreakHidden
 {
+    // RootHide's root is intentionally never advertised through /var/jb.
+    // The ordinary Dopamine switch does not control RootHide's hiding.
+    if ([DOBootstrapper rootHidePortEnabled]) return YES;
     return ![[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"];
 }
 
 - (void)setJailbreakHidden:(BOOL)hidden
 {
+    // In RootHide mode creating /var/jb exposes the secret .jbroot location,
+    // and the normal fake-library/protection toggle can damage this bootstrap.
+    if ([DOBootstrapper rootHidePortEnabled]) return;
     if (hidden && ![self isJailbroken] && geteuid() != 0) {
         [self runTrollStoreAction:@"hide-jailbreak"];
         return;

@@ -62,10 +62,11 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${THEOS_REPO}/master/bin/install-theos" -o install-theos.sh
           gsed -E "/^\s*get_theos\s*$/,+1 s/^(\s*)(get_sdks)\s*$/\1mkdir -p \${THEOS}\/sdks\n\1touch \${THEOS}\/sdks\/sdk\n\1\2/g" -i install-theos.sh
           bash install-theos.sh
-          curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          gunzip $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz
-          tar -xf $THEOS/sdks/iPhoneOS16.5.sdk.tar -C $THEOS/sdks
-          rm $THEOS/sdks/iPhoneOS16.5.sdk.tar
+          curl -fL https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
+          # This download is XZ-compressed, not gzip-compressed. gunzip
+          # always failed before any of our RootHide targets could compile.
+          tar -xJf "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz" -C "$THEOS/sdks"
+          rm "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
           cd $BASEDIR
 
       - name: Build and Install trustcache

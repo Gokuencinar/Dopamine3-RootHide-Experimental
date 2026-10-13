@@ -48,6 +48,35 @@ was only a placeholder. The source audit reports 7 of 8 prerequisites;
 the final activation check deliberately remains false. Enabling it based on
 source presence alone would be unsafe. No RootHide IPA/TIPA has been built.
 
+## Build attempt and reviewed defects (14 October 2026)
+
+The experimental tree is backed up in the **private**
+`Gokuencinar/Dopamine3-RootHide-Experimental` repository on branch
+`roothide-dopamine3-integration`. GitHub Actions run
+`38482080417` failed **before a macOS runner started**: GitHub reported
+that recent account payments failed or the Actions spending limit must be
+increased. There are no Xcode compiler logs, build artifacts, or executed
+workflow steps from this run. Billing changes require the account owner;
+do not interpret the job failure as a compiler result.
+
+Static review corrected a first-run state bug: both bundled RootHide
+`prep_bootstrap.sh` scripts can delete themselves on success. Marker
+creation now follows verified completion rather than depending on the
+script continuing to exist. The RootHide path also prevents a stock
+`/var/jb` symlink from being created via the settings UI, excludes
+stock Procursus apt sources from the hidden bootstrap, and separates dyld
+initialization from the ordinary Dopamine protection/fakelib path.
+The macOS CI workflow now unpacks the iOS SDK's `.tar.xz` with XZ,
+not `gunzip`.
+
+**Still unresolved before enabling RootHide:** Re-randomizing the hidden
+root must repair *all* links and install-time paths, not just the AppGroup
+backlink; the RootHide manager/libroot/libkrw/basebin-link dependency
+sequence requires a full compatibility audit. Incomplete first setups
+remain quarantined rather than automatically deleted, and need an
+explicit, safe recovery flow. Kernel offsets, dyld vtable hooks,
+launchd state, signing, and reboot flows all need device testing.
+
 ## Integration boundaries
 
 1. **IPC and authorization.** Dopamine 3 reserves domain ID `5` for

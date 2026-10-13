@@ -45,6 +45,40 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn("allocBlacklistProcessId()", source)
         self.assertIn("commitBlacklistProcessId(trackedPid)", source)
 
+    def test_root_hide_never_exposes_var_jb_via_settings(self) -> None:
+        manager = self.source("Application/Dopamine/Jailbreak/DOEnvironmentManager.m")
+        settings = self.source("Application/Dopamine/UI/Settings/DOSettingsController.m")
+        self.assertIn("if ([DOBootstrapper rootHidePortEnabled]) return YES;", manager)
+        self.assertIn("if ([DOBootstrapper rootHidePortEnabled]) return;", manager)
+        self.assertIn("![DOBootstrapper rootHidePortEnabled] &&", settings)
+
+    def test_hidden_bootstrap_disables_stock_procursus_repositories(self) -> None:
+        bootstrap = self.source("Application/Dopamine/Jailbreak/DOBootstrapper.m")
+        self.assertIn('@"etc/apt/sources.list.d/procursus.sources"', bootstrap)
+        self.assertIn('@"etc/apt/sources.list.d/procursus.list"', bootstrap)
+        self.assertIn('@"etc/apt/sources.list"', bootstrap)
+        self.assertIn("https://roothide.github.io/procursus", bootstrap)
+
+    def test_root_hide_skips_stock_fakelib_and_protection(self) -> None:
+        source = self.source("Application/Dopamine/Jailbreak/DOJailbreaker.m")
+        self.assertIn("Initializing RootHide dyld support", source)
+        self.assertIn("ensure_dyld_trustcache(", source)
+        self.assertIn("exec_set_patch(true)", source)
+        self.assertIn('setenv("DYLD_IN_CACHE", "0"', source)
+        self.assertIn("Preserve Dopamine 3's conventional protection", source)
+
+    def test_donor_bootstrap_self_deletion_does_not_block_install_marker(self) -> None:
+        source = self.source("Application/Dopamine/Jailbreak/DOBootstrapper.m")
+        self.assertIn("BOOL ranInitialSetup = NO", source)
+        self.assertIn("ranInitialSetup = YES", source)
+        self.assertIn("if (!ranInitialSetup && ![fm fileExistsAtPath:marker])", source)
+        self.assertIn("if (ranInitialSetup) {", source)
+
+    def test_macos_ci_unpacks_xz_sdk_with_correct_decoder(self) -> None:
+        workflow = self.source(".github/workflows/main.yml")
+        self.assertIn('tar -xJf "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"', workflow)
+        self.assertNotIn("gunzip $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz", workflow)
+
     def test_roothide_assets_have_expected_hashes_and_are_in_app_target(self) -> None:
         hashes = {
             "roothide_bootstrap_1800.tar.zst": "3350ed91d77163e0cd73f0f90185b5c9b87d9d294133e25ced3a29329e90370e",

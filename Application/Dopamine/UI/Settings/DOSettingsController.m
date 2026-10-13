@@ -306,7 +306,9 @@
                     [specifiers addObject:reinstallPackageManagersSpecifier];
                 }
 
-                BOOL hideJailbreakButtonShown = (envManager.isJailbroken || (envManager.isInstalledThroughTrollStore && !envManager.isJailbreakHidden));
+                BOOL hideJailbreakButtonShown =
+                    ![DOBootstrapper rootHidePortEnabled] &&
+                    (envManager.isJailbroken || (envManager.isInstalledThroughTrollStore && !envManager.isJailbreakHidden));
                 if (hideJailbreakButtonShown) {
                     // The "Hide Jailbreak" button should be shown
                     // - When jailbroken

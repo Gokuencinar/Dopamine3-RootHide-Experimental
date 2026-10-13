@@ -181,6 +181,21 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
     NSError *error = nil;
     if (![fm createDirectoryAtPath:aptDir withIntermediateDirectories:YES attributes:nil error:&error]) return error;
 
+    // The donor archive can contain Procursus's *stock* repository in
+    // procursus.sources. Leaving it enabled alongside the RootHide arm64e
+    // repository risks installing packages built for the wrong bootstrap.
+    // This method only runs on a freshly created, verified hidden root.
+    for (NSString *relative in @[@"etc/apt/sources.list.d/procursus.sources",
+                                  @"etc/apt/sources.list.d/procursus.list",
+                                  @"etc/apt/sources.list"]) {
+        NSString *sourcePath = [root stringByAppendingPathComponent:relative];
+        if ([fm attributesOfItemAtPath:sourcePath error:nil] &&
+            ![fm removeItemAtPath:sourcePath error:&error]) {
+            return error ?: RH3Error(BootstrapErrorCodeFailedExtracting,
+                                    @"Unable to remove an incompatible stock Procursus source");
+        }
+    }
+
     NSString *sources = [NSString stringWithFormat:
         @"Types: deb\nURIs: https://repo.chariz.com/\nSuites: ./\nComponents:\n\n"
         @"Types: deb\nURIs: https://havoc.app/\nSuites: ./\nComponents:\n\n"
@@ -438,8 +453,11 @@ cleanup_root:
     if (![DOBootstrapper rootHideBrandForPath:root]) {
         return RH3Error(BootstrapErrorCodeFailedFinalising, @"RootHide container is not initialized");
     }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *marker = [root stringByAppendingPathComponent:RH3InstalledMarker];
     NSString *script = [root stringByAppendingPathComponent:@"prep_bootstrap.sh"];
-    if ([NSFileManager.defaultManager fileExistsAtPath:script]) {
+    BOOL ranInitialSetup = NO;
+    if ([fm fileExistsAtPath:script]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing isolated RootHide bootstrap" debug:NO];
         int result = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), script.fileSystemRepresentation, NULL);
         if (result) {
@@ -454,18 +472,23 @@ cleanup_root:
             return RH3Error(BootstrapErrorCodeFailedFinalising,
                             [NSString stringWithFormat:@"RootHide Manager install failed (%d)", managerResult]);
         }
+        // The donor prep_bootstrap.sh deletes itself when it succeeds. Its
+        // absence after execution is expected, not evidence of an incomplete
+        // installation.
+        ranInitialSetup = YES;
     }
     // RootHide v2's libroot path rewriting and Dopamine 3's package updates
     // require the rest of the RootHide BaseBin port before this can be enabled.
-    // Only mark our own bootstrap as installed once the manager and script ran.
-    NSString *marker = [root stringByAppendingPathComponent:RH3InstalledMarker];
-    if (![NSFileManager.defaultManager fileExistsAtPath:marker] &&
-        ![NSFileManager.defaultManager fileExistsAtPath:script]) {
+    // Mark only after the script and the RootHide package managers succeeded.
+    // An existing marker also permits a normal subsequent activation.
+    if (!ranInitialSetup && ![fm fileExistsAtPath:marker]) {
         return RH3Error(BootstrapErrorCodeFailedFinalising,
-                        @"RootHide bootstrap marker is absent, but prep_bootstrap.sh was not present");
+                        @"RootHide bootstrap has no successful initial setup or installation marker");
     }
-    NSError *writeError = nil;
-    if (![@"3" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) return writeError;
+    if (ranInitialSetup) {
+        NSError *writeError = nil;
+        if (![@"3" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) return writeError;
+    }
     return nil;
 }
 
