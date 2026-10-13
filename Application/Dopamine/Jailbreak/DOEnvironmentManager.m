@@ -867,6 +867,27 @@ extern char **environ;
 {
     if (![self isJailbroken] && getuid() != 0) {
         int r = [self runTrollStoreAction:@"delete-bootstrap"];
+        if ([DOBootstrapper rootHidePortEnabled]) {
+            // The legacy TrollStore action returns success even if its child
+            // encountered an NSError. Do not falsely report a hidden-root
+            // deletion unless the owned root is actually gone.
+            if (r != 0) {
+                return [NSError errorWithDomain:bootstrapErrorDomain
+                                           code:BootstrapErrorCodeFailedReplacing
+                                       userInfo:@{NSLocalizedDescriptionKey:
+                                           [NSString stringWithFormat:@"RootHide removal helper failed (%d)", r]}];
+            }
+            NSError *verificationError = nil;
+            NSString *remaining = [DOBootstrapper rootHideExistingRootWithError:&verificationError];
+            if (verificationError) return verificationError;
+            if (remaining) {
+                return [NSError errorWithDomain:bootstrapErrorDomain
+                                           code:BootstrapErrorCodeFailedReplacing
+                                       userInfo:@{NSLocalizedDescriptionKey:
+                                           @"RootHide root remains after the removal helper returned"}];
+            }
+            return nil;
+        }
         if (r != 0) {
             // TODO: maybe handle error
         }

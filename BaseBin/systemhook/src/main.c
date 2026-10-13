@@ -512,10 +512,13 @@ __attribute__((constructor)) static void initializer(void)
 			!strcmp(gExecutablePath, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
 			!strcmp(gExecutablePath, "/usr/libexec/lsd")) {
 				const char *roothideHooks = JBROOT_PATH("/basebin/roothidehooks.dylib");
-				if (jbclient_roothide_jailbroken() && roothideHooks && access(roothideHooks, R_OK) == 0)
-					dlopen(roothideHooks, RTLD_NOW);
-				else
-					dlopen(JBROOT_PATH("/basebin/rootlesshooks.dylib"), RTLD_NOW);
+					void *hideHooks = NULL;
+					if (jbclient_roothide_jailbroken() && roothideHooks && access(roothideHooks, R_OK) == 0)
+						hideHooks = dlopen(roothideHooks, RTLD_NOW);
+					// A partial RootHide install must retain Dopamine 3's stock
+					// cfprefsd / lsd / SpringBoard hooks.
+					if (!hideHooks)
+						dlopen(JBROOT_PATH("/basebin/rootlesshooks.dylib"), RTLD_NOW);
 		}
 		else if (!strcmp(gExecutablePath, "/usr/libexec/watchdogd")) {
 			dlopen(JBROOT_PATH("/basebin/watchdoghook.dylib"), RTLD_NOW);

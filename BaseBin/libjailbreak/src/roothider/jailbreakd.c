@@ -33,20 +33,30 @@ static bool __firstLoad = false;
 static bool __jailbreakd_initialized = false;
 mach_port_t gJailbreakdPort = MACH_PORT_NULL;
 
+bool jailbreakd_is_ready(void)
+{
+	return getpid() == 1 && __jailbreakd_initialized && MACH_PORT_VALID(gJailbreakdPort);
+}
+
 #define JAILBREAKD_CLIENT_PORT_FAST_GET
 
 int registerServerPort()
 {
 	assert(getpid() == 1);
 
-	// deallocate the previous port if it exists
+	// Remove both the send and receive rights when replacing the old port.
 	if(MACH_PORT_VALID(gJailbreakdPort)) {
-		mach_port_deallocate(mach_task_self(), gJailbreakdPort);
+		mach_port_destroy(mach_task_self(), gJailbreakdPort);
 		gJailbreakdPort = MACH_PORT_NULL;
 	}
 
-	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &gJailbreakdPort);
-	mach_port_insert_right(mach_task_self(), gJailbreakdPort, gJailbreakdPort, MACH_MSG_TYPE_MAKE_SEND);
+	if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &gJailbreakdPort) != KERN_SUCCESS)
+		return -1;
+	if (mach_port_insert_right(mach_task_self(), gJailbreakdPort, gJailbreakdPort, MACH_MSG_TYPE_MAKE_SEND) != KERN_SUCCESS) {
+		mach_port_destroy(mach_task_self(), gJailbreakdPort);
+		gJailbreakdPort = MACH_PORT_NULL;
+		return -1;
+	}
 
 	JBLogDebug("jailbreakd server port: %x", gJailbreakdPort);
 
@@ -56,7 +66,12 @@ int registerServerPort()
 	mach_port_deallocate(mach_task_self(), self_host);
 #endif
 
-	return kr==KERN_SUCCESS ? 0 : -1;
+	if (kr != KERN_SUCCESS) {
+		mach_port_destroy(mach_task_self(), gJailbreakdPort);
+		gJailbreakdPort = MACH_PORT_NULL;
+		return -1;
+	}
+	return 0;
 }
 
 #ifdef JAILBREAKD_CLIENT_PORT_FAST_GET
@@ -156,9 +171,12 @@ int initJailbreakd(bool firstLoad)
 		return -1;
 	}
 
+	// A missing optional daemon must not leave RootHide IPC advertising a
+	// working port: client lookup would otherwise crash launchd on retry.
 	__jailbreakd_initialized = true;
-
-	return spawnJailbreakd();
+	int result = spawnJailbreakd();
+	if (result != 0) __jailbreakd_initialized = false;
+	return result;
 }
 
 mach_port_t reactiveJailbreakdPort()
@@ -224,8 +242,7 @@ mach_port_t reactiveJailbreakdPort()
 mach_port_t jailbreakdServerPort()
 {
 	assert(getpid() == 1);
-
-	return gJailbreakdPort;
+	return jailbreakd_is_ready() ? gJailbreakdPort : MACH_PORT_NULL;
 }
 
 mach_port_t jailbreakdClientPort()
@@ -234,6 +251,7 @@ mach_port_t jailbreakdClientPort()
 
 	if(getpid() == 1)
 	{
+		if (!jailbreakd_is_ready()) return MACH_PORT_NULL;
 		kern_return_t kr = mach_port_mod_refs(mach_task_self(), gJailbreakdPort, MACH_PORT_RIGHT_SEND, 1);
 		if(kr == KERN_SUCCESS) {
 			port = gJailbreakdPort;
@@ -292,7 +310,7 @@ xpc_object_t jailbreakdXpcRequest(xpc_object_t xdict)
 
 	mach_port_deallocate(mach_task_self(), port);
 
-	xpc_release(pipe);
+	if (pipe) xpc_release(pipe);
 	return xreply;
 }
 

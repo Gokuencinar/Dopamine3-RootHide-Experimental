@@ -2,7 +2,11 @@ TARGET = libkrw-dopamine.dylib
 CC = clang
 
 CFLAGS = -I../../BaseBin/.include -Isrc -isysroot $(shell xcrun --sdk iphoneos --show-sdk-path) -arch arm64 -arch arm64e -miphoneos-version-min=15.0 -fobjc-arc -O2
-LDFLAGS = -dynamiclib -rpath /var/jb/usr/lib -L../../BaseBin/.build -ljailbreak
+# Keep conventional Dopamine's /var/jb search path, but also resolve the
+# sibling libjailbreak.dylib in RootHide's hidden usr/lib. The provider lives
+# in usr/lib/libkrw/, so @loader_path/.. points at usr/lib without exposing
+# the .jbroot path through a global /var/jb symlink.
+LDFLAGS = -dynamiclib -rpath /var/jb/usr/lib -rpath @loader_path/.. -L../../BaseBin/.build -ljailbreak
 
 all: $(TARGET) sign
 

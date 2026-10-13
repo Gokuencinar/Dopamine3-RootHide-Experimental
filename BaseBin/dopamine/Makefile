@@ -1,5 +1,8 @@
 TARGET = dopamine
 
+# Direct BaseBin builds must provide a numeric value to #if BUILD_STANDALONE.
+BUILD_STANDALONE ?= 0
+
 CC = clang
 
 CHOMA_CFLAGS = -DDISABLE_SIGNING=1

@@ -29,6 +29,59 @@
 static NSString *const RH3RootDirectory = @"/var/containers/Bundle/Application";
 static NSString *const RH3AppGroupDirectory = @"/var/mobile/Containers/Shared/AppGroup";
 static NSString *const RH3InstalledMarker = @".installed_roothide3";
+static NSString *const RH3PendingMarker = @".installing_roothide3";
+static NSError *RH3Error(BootstrapErrorCode code, NSString *message);
+
+// Every unfinished root is explicitly owned by this port. In particular, a
+// RootHide 2 .jbroot (or a crashed older build without our marker) is NEVER
+// interpreted as a recoverable RootHide 3 installation.
+static NSString *RH3PendingState(NSString *root)
+{
+    NSString *path = [root stringByAppendingPathComponent:RH3PendingMarker];
+    struct stat st;
+    if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) return nil;
+    return [NSString stringWithContentsOfFile:path
+                                        encoding:NSUTF8StringEncoding error:nil];
+}
+
+static NSError *RH3WritePendingState(NSString *root, NSString *stage)
+{
+    NSString *path = [root stringByAppendingPathComponent:RH3PendingMarker];
+    struct stat st;
+    if (lstat(path.fileSystemRepresentation, &st) == 0 && !S_ISREG(st.st_mode))
+        return RH3Error(BootstrapErrorCodeFailedReplacing,
+                        @"Refusing to overwrite a non-file RootHide install marker");
+    NSError *error = nil;
+    if (![stage writeToFile:path
+                atomically:YES encoding:NSUTF8StringEncoding error:&error]) return error;
+    return nil;
+}
+
+static BOOL RH3IsRealDirectory(NSString *path)
+{
+    struct stat st;
+    return lstat(path.fileSystemRepresentation, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Rewrite only absolute links into our old, owned directories. Keep links to
+// iOS system files and relative symlinks intact while re-randomizing jbrand.
+static NSString *RH3RetargetLink(NSString *link, NSString *oldRoot,
+                                 NSString *oldSecondary, NSString *newRoot,
+                                 NSString *newSecondary)
+{
+    NSArray<NSString *> *from = @[oldRoot, [@"/private" stringByAppendingString:oldRoot],
+                                   oldSecondary, [@"/private" stringByAppendingString:oldSecondary]];
+    NSArray<NSString *> *to = @[newRoot, [@"/private" stringByAppendingString:newRoot],
+                                 newSecondary, [@"/private" stringByAppendingString:newSecondary]];
+    for (NSUInteger i = 0; i < from.count; i++) {
+        NSString *prefix = from[i];
+        if ([link isEqualToString:prefix] ||
+            [link hasPrefix:[prefix stringByAppendingString:@"/"]]) {
+            return [to[i] stringByAppendingString:[link substringFromIndex:prefix.length]];
+        }
+    }
+    return link;
+}
 
 static uint64_t RH3NewBrand(void)
 {
@@ -100,18 +153,37 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
 
     NSString *foundRoot = nil;
     for (NSString *entry in entries) {
+        if ([entry hasPrefix:@".jbroot-"] && [entry containsString:@".removing-roothide3-"]) {
+            if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                        @"An interrupted RootHide 3 uninstall needs manual recovery");
+            return nil;
+        }
         uint64_t brand = RH3BrandFromName(entry);
         if (!brand) continue;
         NSString *root = [RH3RootDirectory stringByAppendingPathComponent:entry];
-        BOOL isDirectory = NO;
-        if (![fm fileExistsAtPath:root isDirectory:&isDirectory] || !isDirectory) continue;
-        NSString *ownMarker = [root stringByAppendingPathComponent:RH3InstalledMarker];
-        if (![fm fileExistsAtPath:ownMarker]) {
+        if (!RH3IsRealDirectory(root)) {
             if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
-                [NSString stringWithFormat:@"An existing RootHide/unfinished .jbroot container exists at %@. Remove it using its original jailbreak before trying RootHide 3.", root]);
+                                        @"RootHide-named path is not a real directory");
+            return nil;
+        }
+        NSString *ownMarker = [root stringByAppendingPathComponent:RH3InstalledMarker];
+        NSString *pending = RH3PendingState(root);
+        struct stat installedInfo;
+        BOOL installed = lstat(ownMarker.fileSystemRepresentation, &installedInfo) == 0 &&
+                         S_ISREG(installedInfo.st_mode) &&
+                         [[NSString stringWithContentsOfFile:ownMarker
+                                                    encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"3"];
+        if (!installed && !([@[@"layout", @"prepared", @"script-complete"] containsObject:pending])) {
+            if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                [NSString stringWithFormat:@"Unowned or unknown .jbroot at %@; refusing to adopt or delete it", root]);
             return nil;
         }
         NSString *secondary = [RH3AppGroupDirectory stringByAppendingPathComponent:entry];
+        if (!RH3IsRealDirectory(secondary)) {
+            if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                        @"RootHide AppGroup is not a real directory");
+            return nil;
+        }
         NSString *backlink = [secondary stringByAppendingPathComponent:@".jbroot"];
         NSDictionary *attributes = [fm attributesOfItemAtPath:backlink error:nil];
         NSString *destination = [fm destinationOfSymbolicLinkAtPath:backlink error:nil];
@@ -119,6 +191,13 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
             ![destination isEqualToString:root]) {
             if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
                 [NSString stringWithFormat:@"RootHide AppGroup link is missing or invalid for %@", root]);
+            return nil;
+        }
+        NSString *privateVar = [root stringByAppendingPathComponent:@"private/var"];
+        if (![[fm destinationOfSymbolicLinkAtPath:privateVar error:nil]
+              isEqualToString:[secondary stringByAppendingPathComponent:@"var"]]) {
+            if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                        @"RootHide private/var link does not match the owned AppGroup");
             return nil;
         }
         if (foundRoot) {
@@ -170,6 +249,16 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
     if (![NSFileManager.defaultManager fileExistsAtPath:
          [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin.tar"]]) {
         return RH3Error(BootstrapErrorCodeFailedExtracting, @"Dopamine 3 basebin.tar is missing");
+    }
+    // These three are generated by the Packages Makefiles and copied by Xcode.
+    // Refuse a new root before extraction rather than leaving an unfinished
+    // bootstrap because the app build omitted a required dependency.
+    for (NSString *name in @[@"libroot.deb", @"libkrw-dopamine.deb", @"basebin-link.deb"]) {
+        NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:name];
+        struct stat st;
+        if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode))
+            return RH3Error(BootstrapErrorCodeFailedExtracting,
+                            [NSString stringWithFormat:@"Missing RootHide dependency payload %@", name]);
     }
     return nil;
 }
@@ -226,16 +315,80 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
 - (BOOL)rh3ReplaceSymlinkAtPath:(NSString *)path withDestination:(NSString *)destination error:(NSError **)error
 {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSDictionary *attributes = [fm attributesOfItemAtPath:path error:nil];
-    if (attributes) {
-        if (![attributes[NSFileType] isEqual:NSFileTypeSymbolicLink]) {
-            if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
-                                       [NSString stringWithFormat:@"Refusing to replace a non-symlink at %@", path]);
-            return NO;
-        }
-        if (![fm removeItemAtPath:path error:error]) return NO;
+    struct stat st;
+    int statResult = lstat(path.fileSystemRepresentation, &st);
+    if (statResult == 0 && !S_ISLNK(st.st_mode)) {
+        if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                   [NSString stringWithFormat:@"Refusing to replace non-symlink %@", path]);
+        return NO;
     }
-    return [fm createSymbolicLinkAtPath:path withDestinationPath:destination error:error];
+    if (statResult != 0 && errno != ENOENT) {
+        if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                   [NSString stringWithFormat:@"Cannot inspect symlink %@", path]);
+        return NO;
+    }
+    // Create before replacing: unlink/create leaves a damaged installation if
+    // creation fails. POSIX rename atomically exchanges the existing symlink.
+    NSString *temporary = [path stringByAppendingFormat:@".roothide3-%@", NSUUID.UUID.UUIDString];
+    if (![fm createSymbolicLinkAtPath:temporary withDestinationPath:destination error:error]) return NO;
+    if (rename(temporary.fileSystemRepresentation, path.fileSystemRepresentation) == 0) return YES;
+    int savedErrno = errno;
+    [fm removeItemAtPath:temporary error:nil];
+    if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                                [NSString stringWithFormat:@"Atomic symlink replacement failed at %@ (%s)",
+                                 path, strerror(savedErrno)]);
+    return NO;
+}
+
+// Only rewrite absolute links into our old *owned* container. Other absolute
+// symlinks (including iOS system paths) and all relative symlinks are retained.
+- (NSError *)rh3RepairLinksAtRoot:(NSString *)root secondary:(NSString *)secondary
+                        oldRoot:(NSString *)oldRoot oldSecondary:(NSString *)oldSecondary
+                        changes:(NSMutableArray<NSDictionary<NSString *, NSString *> *> *)changes
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *base in @[root, secondary]) {
+        __block NSError *walkError = nil;
+        NSDirectoryEnumerator<NSURL *> *entries = [fm enumeratorAtURL:[NSURL fileURLWithPath:base]
+                                     includingPropertiesForKeys:nil options:0
+                                     errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
+            walkError = enumerationError;
+            return NO;
+        }];
+        if (!entries) return RH3Error(BootstrapErrorCodeFailedReplacing, @"Cannot inspect renamed RootHide tree");
+        for (NSURL *entry in entries) {
+            NSString *path = entry.path;
+            struct stat st;
+            if (lstat(path.fileSystemRepresentation, &st) != 0)
+                return RH3Error(BootstrapErrorCodeFailedReplacing,
+                                [NSString stringWithFormat:@"Cannot inspect renamed entry %@", path]);
+            if (!S_ISLNK(st.st_mode)) continue;
+            NSString *oldTarget = [fm destinationOfSymbolicLinkAtPath:path error:nil];
+            if (!oldTarget) return RH3Error(BootstrapErrorCodeFailedReplacing, @"Unreadable RootHide link");
+            NSString *newTarget = RH3RetargetLink(oldTarget, oldRoot, oldSecondary, root, secondary);
+            if ([newTarget isEqualToString:oldTarget]) continue;
+            if (![self rh3ReplaceSymlinkAtPath:path withDestination:newTarget error:nil])
+                return RH3Error(BootstrapErrorCodeFailedReplacing,
+                                [NSString stringWithFormat:@"Could not repair RootHide symlink %@", path]);
+            [changes addObject:@{@"path":path, @"old":oldTarget}];
+        }
+        if (walkError) return walkError;
+    }
+    // These are layout invariants, not optional symlinks. Check exact targets.
+    NSString *privateVar = [root stringByAppendingPathComponent:@"private/var"];
+    NSString *backlink = [secondary stringByAppendingPathComponent:@".jbroot"];
+    for (NSDictionary *link in @[@{@"path":privateVar, @"target":[secondary stringByAppendingPathComponent:@"var"]},
+                                 @{@"path":backlink, @"target":root}]) {
+        NSString *path = link[@"path"];
+        NSString *target = [fm destinationOfSymbolicLinkAtPath:path error:nil];
+        if (!target) return RH3Error(BootstrapErrorCodeFailedReplacing, @"Required RootHide layout symlink missing");
+        if (![target isEqualToString:link[@"target"]]) {
+            if (![self rh3ReplaceSymlinkAtPath:path withDestination:link[@"target"] error:nil])
+                return RH3Error(BootstrapErrorCodeFailedReplacing, @"Failed repairing required RootHide layout link");
+            [changes addObject:@{@"path":path, @"old":target}];
+        }
+    }
+    return nil;
 }
 
 - (NSError *)rh3CreateRoot:(NSString *)root version:(NSInteger)version
@@ -296,6 +449,7 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
                     withDestinationPath:root error:&error]) goto cleanup_both;
 
     error = [self rh3BuildPackageSourcesInRoot:root version:version];
+    if (!error) error = RH3WritePendingState(root, @"layout");
     if (!error) return nil;
 
 cleanup_both:
@@ -314,13 +468,18 @@ cleanup_root:
     NSString *oldSecondary = [RH3AppGroupDirectory stringByAppendingPathComponent:oldName];
     NSError *error = nil;
 
+    if (![DOBootstrapper rootHideBrandForPath:oldRoot] ||
+        !RH3IsRealDirectory(oldRoot) || !RH3IsRealDirectory(oldSecondary))
+        return RH3Error(BootstrapErrorCodeFailedReplacing, @"Invalid RootHide root for re-randomization");
+
     for (int attempt = 0; attempt < 16; attempt++) {
         uint64_t brand = RH3NewBrand();
         if (!brand) continue;
         NSString *name = [NSString stringWithFormat:@".jbroot-%016llX", brand];
         NSString *newRoot = [RH3RootDirectory stringByAppendingPathComponent:name];
         NSString *newSecondary = [RH3AppGroupDirectory stringByAppendingPathComponent:name];
-        if ([fm fileExistsAtPath:newRoot] || [fm fileExistsAtPath:newSecondary]) continue;
+        if ([fm attributesOfItemAtPath:newRoot error:nil] ||
+            [fm attributesOfItemAtPath:newSecondary error:nil]) continue;
 
         if (![fm moveItemAtPath:oldRoot toPath:newRoot error:&error]) return error;
         if (![fm moveItemAtPath:oldSecondary toPath:newSecondary error:&error]) {
@@ -328,19 +487,25 @@ cleanup_root:
             if (![fm moveItemAtPath:newRoot toPath:oldRoot error:&rollbackError]) return rollbackError;
             return error;
         }
-        NSString *privateVar = [newRoot stringByAppendingPathComponent:@"private/var"];
-        NSString *backlink = [newSecondary stringByAppendingPathComponent:@".jbroot"];
-        if (![self rh3ReplaceSymlinkAtPath:privateVar
-                         withDestination:[newSecondary stringByAppendingPathComponent:@"var"] error:&error] ||
-            ![self rh3ReplaceSymlinkAtPath:backlink withDestination:newRoot error:&error]) {
-            // Restore the previous names and references if either link update failed.
-            [fm moveItemAtPath:newSecondary toPath:oldSecondary error:nil];
-            [fm moveItemAtPath:newRoot toPath:oldRoot error:nil];
-            [self rh3ReplaceSymlinkAtPath:[oldRoot stringByAppendingPathComponent:@"private/var"]
-                         withDestination:[oldSecondary stringByAppendingPathComponent:@"var"] error:nil];
-            [self rh3ReplaceSymlinkAtPath:[oldSecondary stringByAppendingPathComponent:@".jbroot"]
-                         withDestination:oldRoot error:nil];
-            return error;
+        NSMutableArray<NSDictionary<NSString *,NSString *> *> *changes = [NSMutableArray new];
+        error = [self rh3RepairLinksAtRoot:newRoot secondary:newSecondary
+                                 oldRoot:oldRoot oldSecondary:oldSecondary changes:changes];
+        if (error) {
+            // Undo every changed link before renaming directories back. Failure
+            // is reported and not hidden: the user must not run another update
+            // against a potentially half-migrated root.
+            NSError *rollbackError = nil;
+            for (NSDictionary *entry in changes.reverseObjectEnumerator) {
+                if (![self rh3ReplaceSymlinkAtPath:entry[@"path"]
+                                   withDestination:entry[@"old"] error:&rollbackError]) break;
+            }
+            if (!rollbackError && ![fm moveItemAtPath:newSecondary toPath:oldSecondary error:&rollbackError]) {
+                // Keep both new directories together if rollback is incomplete.
+            }
+            if (!rollbackError && ![fm moveItemAtPath:newRoot toPath:oldRoot error:&rollbackError]) {
+                // The caller will see a hard failure rather than using stale paths.
+            }
+            return rollbackError ?: error;
         }
         *rootPtr = newRoot;
         return nil;
@@ -364,11 +529,19 @@ cleanup_root:
     NSString *archive = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"basebin.tar"];
     error = [self extractTar:archive toPath:root];
     if (error) {
-        [fm removeItemAtPath:oldBasebin error:nil];
-        if (hadBasebin) [fm moveItemAtPath:backup toPath:oldBasebin error:nil];
+        NSError *rollbackError = nil;
+        if ([fm attributesOfItemAtPath:oldBasebin error:nil] &&
+            ![fm removeItemAtPath:oldBasebin error:&rollbackError])
+            return RH3Error(BootstrapErrorCodeFailedReplacing,
+                            [NSString stringWithFormat:@"BaseBin removal failed; backup retained at %@: %@",
+                             backup, rollbackError.localizedDescription]);
+        if (hadBasebin && ![fm moveItemAtPath:backup toPath:oldBasebin error:&rollbackError])
+            return RH3Error(BootstrapErrorCodeFailedReplacing,
+                            [NSString stringWithFormat:@"BaseBin rollback failed; backup retained at %@: %@",
+                             backup, rollbackError.localizedDescription]);
         return error;
     }
-    if (hadBasebin) [fm removeItemAtPath:backup error:nil];
+    if (hadBasebin && ![fm removeItemAtPath:backup error:&error]) return error;
     [fm removeItemAtPath:[oldBasebin stringByAppendingPathComponent:@"basebin.tc"] error:nil];
     NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
     if (bundleIdentifier) {
@@ -379,8 +552,129 @@ cleanup_root:
     return nil;
 }
 
+// Dopamine's bundled dependency debs install into /var/jb. Running dpkg -i on
+// them would create a visible rootless bootstrap on a RootHide installation.
+// Instead unpack into a private staging directory and install only their
+// precisely enumerated files inside the verified hidden root.
+- (NSError *)rh3InstallDependenciesAtRoot:(NSString *)root
+{
+    if (![DOBootstrapper rootHideBrandForPath:root] || !RH3IsRealDirectory(root))
+        return RH3Error(BootstrapErrorCodeFailedFinalising, @"Invalid RootHide dependency destination");
+    if (geteuid() != 0)
+        return RH3Error(BootstrapErrorCodeFailedFinalising, @"RootHide dependencies require root privileges");
+
+    NSArray<NSDictionary<NSString *, NSString *> *> *files = @[
+        @{@"package":@"libroot.deb", @"from":@"var/jb/usr/lib/libroot.dylib", @"to":@"usr/lib/libroot.dylib"},
+        @{@"package":@"libkrw-dopamine.deb", @"from":@"var/jb/usr/lib/libkrw/libkrw-dopamine.dylib", @"to":@"usr/lib/libkrw/libkrw-dopamine.dylib"},
+        @{@"package":@"basebin-link.deb", @"from":@"var/jb/usr/bin/jbctl", @"to":@"usr/bin/jbctl", @"target":@"../../basebin/jbctl"},
+        @{@"package":@"basebin-link.deb", @"from":@"var/jb/usr/bin/opainject", @"to":@"usr/bin/opainject", @"target":@"../../basebin/opainject"},
+        @{@"package":@"basebin-link.deb", @"from":@"var/jb/usr/lib/libjailbreak.dylib", @"to":@"usr/lib/libjailbreak.dylib", @"target":@"../../basebin/libjailbreak.dylib"},
+    ];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *stage = [root stringByAppendingPathComponent:
+                       [@".roothide3-deps-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSError *error = nil;
+    if (![fm createDirectoryAtPath:stage withIntermediateDirectories:NO
+                       attributes:@{NSFilePosixPermissions:@0700} error:&error]) return error;
+
+    NSMutableDictionary<NSString *,NSString *> *unpacked = [NSMutableDictionary new];
+    NSMutableArray<NSDictionary<NSString *,NSString *> *> *applied = [NSMutableArray new];
+    for (NSUInteger index = 0; index < files.count; index++) {
+        NSDictionary<NSString *,NSString *> *file = files[index];
+        NSString *packageName = file[@"package"];
+        NSString *directory = unpacked[packageName];
+        if (!directory) {
+            NSString *package = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:packageName];
+            struct stat packageInfo;
+            if (lstat(package.fileSystemRepresentation, &packageInfo) != 0 || !S_ISREG(packageInfo.st_mode)) {
+                error = RH3Error(BootstrapErrorCodeFailedFinalising,
+                                 [NSString stringWithFormat:@"Missing bundled RootHide dependency %@", packageName]);
+                break;
+            }
+            directory = [stage stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"package-%lu", (unsigned long)unpacked.count]];
+            if (exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg-deb"), "-x",
+                                 package.fileSystemRepresentation, directory.fileSystemRepresentation, NULL) != 0) {
+                error = RH3Error(BootstrapErrorCodeFailedFinalising,
+                                 [NSString stringWithFormat:@"Cannot unpack RootHide dependency %@", packageName]);
+                break;
+            }
+            unpacked[packageName] = directory;
+        }
+        NSString *source = [directory stringByAppendingPathComponent:file[@"from"]];
+        NSString *target = [root stringByAppendingPathComponent:file[@"to"]];
+        NSString *parent = target.stringByDeletingLastPathComponent;
+        struct stat sourceInfo;
+        BOOL shouldBeLink = [packageName isEqualToString:@"basebin-link.deb"];
+        if (lstat(source.fileSystemRepresentation, &sourceInfo) != 0 ||
+            !(shouldBeLink ? S_ISLNK(sourceInfo.st_mode) : S_ISREG(sourceInfo.st_mode)) ||
+            !RH3IsRealDirectory(parent)) {
+            error = RH3Error(BootstrapErrorCodeFailedFinalising,
+                             [NSString stringWithFormat:@"Unexpected RootHide dependency layout %@", file[@"to"]]);
+            break;
+        }
+        if (shouldBeLink &&
+            ![[fm destinationOfSymbolicLinkAtPath:source error:nil] isEqualToString:file[@"target"]]) {
+            error = RH3Error(BootstrapErrorCodeFailedFinalising,
+                             [NSString stringWithFormat:@"Untrusted dependency symlink target in %@", file[@"from"]]);
+            break;
+        }
+        NSString *prepared = [stage stringByAppendingPathComponent:
+                              [NSString stringWithFormat:@"prepared-%lu", (unsigned long)index]];
+        NSString *backup = [stage stringByAppendingPathComponent:
+                            [NSString stringWithFormat:@"backup-%lu", (unsigned long)index]];
+        // Do not rely on Foundation's copyItem semantics for symbolic links:
+        // explicitly recreate only the checked relative target from our
+        // basebin-link payload. This cannot resolve through /var/jb.
+        if (shouldBeLink) {
+            if (![fm createSymbolicLinkAtPath:prepared withDestinationPath:file[@"target"]
+                                    error:&error]) break;
+        } else if (![fm copyItemAtPath:source toPath:prepared error:&error]) {
+            break;
+        }
+        struct stat previousInfo;
+        BOOL hadPrevious = lstat(target.fileSystemRepresentation, &previousInfo) == 0;
+        if (hadPrevious && S_ISDIR(previousInfo.st_mode)) {
+            error = RH3Error(BootstrapErrorCodeFailedReplacing,
+                             [NSString stringWithFormat:@"Refusing to replace directory %@", target]);
+            break;
+        }
+        if (hadPrevious && ![fm moveItemAtPath:target toPath:backup error:&error]) break;
+        // Record before installation: rollback also covers a failed move.
+        [applied addObject:@{@"target":target, @"backup":backup,
+                             @"previous":hadPrevious ? @"1" : @"0"}];
+        if (![fm moveItemAtPath:prepared toPath:target error:&error]) break;
+    }
+    if (error) {
+        NSError *rollbackError = nil;
+        for (NSDictionary *entry in applied.reverseObjectEnumerator) {
+            NSString *target = entry[@"target"];
+            if (lstat(target.fileSystemRepresentation, &(struct stat){0}) == 0 &&
+                ![fm removeItemAtPath:target error:&rollbackError]) break;
+            if ([entry[@"previous"] isEqualToString:@"1"] &&
+                ![fm moveItemAtPath:entry[@"backup"] toPath:target error:&rollbackError]) break;
+        }
+        if (rollbackError) {
+            // Never erase staged backups when an attempted rollback failed.
+            return RH3Error(BootstrapErrorCodeFailedReplacing,
+                            [NSString stringWithFormat:@"Dependency rollback incomplete at %@: %@",
+                             stage, rollbackError.localizedDescription]);
+        }
+    }
+    [fm removeItemAtPath:stage error:nil];
+    return error;
+}
+
 - (void)prepareRootHideBootstrapWithCompletion:(void (^)(NSError *))completion
 {
+    // The donor bootstrap, Sileo, Zebra and RootHide Manager packages all
+    // require iphoneos-arm64e. An A9/arm64 device must fail before we create
+    // any hidden container or modify its existing jailbreak.
+    if (![[DOEnvironmentManager sharedManager] isArm64e]) {
+        completion(RH3Error(BootstrapErrorCodeFailedExtracting,
+                            @"RootHide donor packages require an arm64e device; arm64 is unsupported"));
+        return;
+    }
     // The donor bootstrap format is verified for iOS 15 and 16 only. Never
     // silently use stock Procursus on an unverified newer iOS version.
     if (@available(iOS 17.0, *)) {
@@ -408,10 +702,21 @@ cleanup_root:
     }
     NSString *root = [DOBootstrapper rootHideExistingRootWithError:&error];
     if (error) { completion(error); return; }
+    if (existingPath.length && root && ![existingPath isEqualToString:root]) {
+        completion(RH3Error(BootstrapErrorCodeFailedReplacing,
+                            @"Active RootHide path does not match the verified container"));
+        return;
+    }
     if (root) {
-        [[DOUIManager sharedInstance] sendLog:@"Re-randomizing RootHide bootstrap" debug:NO];
-        error = [self rh3RerandomizeRoot:&root];
-        if (error) { completion(error); return; }
+        // Re-randomizing a half-installed root would make an interrupted
+        // transaction harder to recover. Keep its jbrand until setup finishes.
+        if (!RH3PendingState(root)) {
+            [[DOUIManager sharedInstance] sendLog:@"Re-randomizing RootHide bootstrap" debug:NO];
+            error = [self rh3RerandomizeRoot:&root];
+            if (error) { completion(error); return; }
+        } else {
+            [[DOUIManager sharedInstance] sendLog:@"Resuming RootHide 3 installation" debug:NO];
+        }
     } else {
         for (int attempt = 0; attempt < 16; attempt++) {
             uint64_t brand = RH3NewBrand();
@@ -442,6 +747,10 @@ cleanup_root:
 
     error = [self rh3InstallBasebinAtRoot:root];
     if (!error) error = [self rh3BuildPackageSourcesInRoot:root version:version];
+    // Once prep_bootstrap.sh has succeeded it removes itself; never downgrade
+    // script-complete to prepared after a later BaseBin refresh.
+    if (!error && ![RH3PendingState(root) isEqualToString:@"script-complete"] &&
+        RH3PendingState(root)) error = RH3WritePendingState(root, @"prepared");
     if (!error) JBFixMobilePermissions();
     completion(error);
 }
@@ -453,42 +762,75 @@ cleanup_root:
     if (![DOBootstrapper rootHideBrandForPath:root]) {
         return RH3Error(BootstrapErrorCodeFailedFinalising, @"RootHide container is not initialized");
     }
+    NSError *rootError = nil;
+    NSString *ownedRoot = [DOBootstrapper rootHideExistingRootWithError:&rootError];
+    if (rootError) return rootError;
+    if (![root isEqualToString:ownedRoot])
+        return RH3Error(BootstrapErrorCodeFailedFinalising,
+                        @"Active RootHide root differs from its verified owned container");
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *marker = [root stringByAppendingPathComponent:RH3InstalledMarker];
     NSString *script = [root stringByAppendingPathComponent:@"prep_bootstrap.sh"];
+    NSString *pending = RH3PendingState(root);
     BOOL ranInitialSetup = NO;
-    if ([fm fileExistsAtPath:script]) {
+    BOOL installed = [[NSString stringWithContentsOfFile:marker
+                                               encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"3"];
+    if (!installed && ![@[@"prepared", @"script-complete"] containsObject:pending])
+        return RH3Error(BootstrapErrorCodeFailedFinalising, @"RootHide bootstrap is not fully prepared");
+    if (!installed && [pending isEqualToString:@"prepared"] &&
+        ![fm fileExistsAtPath:script])
+        return RH3Error(BootstrapErrorCodeFailedFinalising,
+                        @"RootHide setup was interrupted while executing its script; manual recovery is required");
+    if ([pending isEqualToString:@"prepared"] && [fm fileExistsAtPath:script]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing isolated RootHide bootstrap" debug:NO];
         int result = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), script.fileSystemRepresentation, NULL);
         if (result) {
             return RH3Error(BootstrapErrorCodeFailedFinalising,
                             [NSString stringWithFormat:@"RootHide prep_bootstrap.sh failed (%d)", result]);
         }
+        NSError *stateError = RH3WritePendingState(root, @"script-complete");
+        if (stateError) return stateError;
+        pending = @"script-complete";
+        ranInitialSetup = YES;
+    }
+    if (!ranInitialSetup && ![fm fileExistsAtPath:marker]) {
+        // The script removes itself on success, so this state is recoverable
+        // only if we durably recorded its successful completion beforehand.
+        if (![pending isEqualToString:@"script-complete"])
+            return RH3Error(BootstrapErrorCodeFailedFinalising,
+                            @"Cannot resume RootHide without completed bootstrap script");
+    }
+    if (ranInitialSetup) {
+        [[DOUIManager sharedInstance] sendLog:@"RootHide bootstrap script completed; installing dependencies" debug:NO];
+    }
+    // The package payloads generated by Dopamine are rooted at /var/jb;
+    // do NOT use dpkg -i for them on RootHide. Install selected contents into
+    // this verified hidden root, with backups and rollback.
+    NSError *dependenciesError = [self rh3InstallDependenciesAtRoot:root];
+    if (dependenciesError) return dependenciesError;
+    if (!installed) {
         NSError *error = [self installPackageManagers];
         if (error) return error;
         NSString *manager = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"roothideapp.deb"];
-        int managerResult = [self installPackage:manager];
+        if (geteuid() != 0)
+            return RH3Error(BootstrapErrorCodeFailedFinalising, @"RootHide Manager installation requires root");
+        int managerResult = exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"),
+                                             "-i", manager.fileSystemRepresentation, NULL);
         if (managerResult) {
             return RH3Error(BootstrapErrorCodeFailedFinalising,
                             [NSString stringWithFormat:@"RootHide Manager install failed (%d)", managerResult]);
         }
-        // The donor prep_bootstrap.sh deletes itself when it succeeds. Its
-        // absence after execution is expected, not evidence of an incomplete
-        // installation.
-        ranInitialSetup = YES;
     }
-    // RootHide v2's libroot path rewriting and Dopamine 3's package updates
-    // require the rest of the RootHide BaseBin port before this can be enabled.
-    // Mark only after the script and the RootHide package managers succeeded.
-    // An existing marker also permits a normal subsequent activation.
-    if (!ranInitialSetup && ![fm fileExistsAtPath:marker]) {
+    if ([self fileOrSymlinkExistsAtPath:@"/var/jb"])
         return RH3Error(BootstrapErrorCodeFailedFinalising,
-                        @"RootHide bootstrap has no successful initial setup or installation marker");
-    }
-    if (ranInitialSetup) {
+                        @"A package exposed /var/jb during RootHide setup; refusing to mark it installed");
+    if (!installed) {
         NSError *writeError = nil;
         if (![@"3" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) return writeError;
     }
+    if (pending && ![fm removeItemAtPath:[root stringByAppendingPathComponent:RH3PendingMarker]
+                                   error:nil])
+        return RH3Error(BootstrapErrorCodeFailedFinalising, @"Unable to clear RootHide install state");
     return nil;
 }
 
@@ -503,8 +845,27 @@ cleanup_root:
     }
     NSString *secondary = [RH3AppGroupDirectory stringByAppendingPathComponent:root.lastPathComponent];
     NSFileManager *fm = NSFileManager.defaultManager;
-    if (![fm removeItemAtPath:secondary error:&error]) return error;
-    if (![fm removeItemAtPath:root error:&error]) return error;
+    if (!RH3IsRealDirectory(root) || !RH3IsRealDirectory(secondary) ||
+        ![[fm destinationOfSymbolicLinkAtPath:[secondary stringByAppendingPathComponent:@".jbroot"]
+                                       error:nil] isEqualToString:root])
+        return RH3Error(BootstrapErrorCodeFailedReplacing,
+                        @"Refusing to delete unverified RootHide 3 containers");
+    // Rename BOTH owned directories to quarantine first. If the second rename
+    // fails, restore the first. RootHide2 directories are never selected.
+    NSString *suffix = [@".removing-roothide3-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSString *quarantinedRoot = [root stringByAppendingString:suffix];
+    NSString *quarantinedSecondary = [secondary stringByAppendingString:suffix];
+    if (![fm moveItemAtPath:root toPath:quarantinedRoot error:&error]) return error;
+    if (![fm moveItemAtPath:secondary toPath:quarantinedSecondary error:&error]) {
+        NSError *rollback = nil;
+        if (![fm moveItemAtPath:quarantinedRoot toPath:root error:&rollback]) return rollback;
+        return error;
+    }
+    // Do not recurse outside these two quarantined, owned directories. An
+    // interrupted deletion leaves distinguishable quarantine paths for manual
+    // recovery rather than making any other .jbroot eligible for deletion.
+    if (![fm removeItemAtPath:quarantinedRoot error:&error]) return error;
+    if (![fm removeItemAtPath:quarantinedSecondary error:&error]) return error;
     return nil;
 }
 
@@ -1018,7 +1379,11 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
                                 [NSString stringWithFormat:@"Unsupported RootHide package manager: %@", stockPackage]);
             }
             NSString *path = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:package];
-            int status = [self installPackage:path];
+            if (geteuid() != 0)
+                return RH3Error(BootstrapErrorCodeFailedFinalising,
+                                @"RootHide package installation requires root privileges");
+            int status = exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"),
+                                          "-i", path.fileSystemRepresentation, NULL);
             if (status != 0) {
                 return RH3Error(BootstrapErrorCodeFailedFinalising,
                                 [NSString stringWithFormat:@"Installing %@ failed (%d)", package, status]);

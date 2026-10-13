@@ -34,7 +34,7 @@ void recurse_collect_untrusted_cdhashes(const char *path, const char *callerImag
 
 static int trust_macho_recurse(const char *machoPath, const char *dlopenCallerImagePath, const char *dlopenCallerExecutablePath, const char *workingDir, xpc_object_t preferredArchsArray)
 {
-	if(!machoPath || !dlopenCallerExecutablePath) return -1;
+	if(!machoPath || !*machoPath || !dlopenCallerExecutablePath || !*dlopenCallerExecutablePath) return -1;
 
 	size_t preferredArchCount = 0;
 	if (preferredArchsArray) preferredArchCount = xpc_array_get_count(preferredArchsArray);
@@ -57,11 +57,11 @@ static int trust_macho_recurse(const char *machoPath, const char *dlopenCallerIm
 	cdhash_t *cdhashes = NULL;
 	uint32_t cdhashesCount = 0;
 	recurse_collect_untrusted_cdhashes(machoPath, dlopenCallerImagePath, dlopenCallerExecutablePath, workingDir, &preferredArch, &cdhashes, &cdhashesCount);
-	if (cdhashes && cdhashesCount > 0) {
-		jb_trustcache_add_cdhashes(cdhashes, cdhashesCount);
-		free(cdhashes);
-	}
-	return 0;
+	int result = 0;
+	if (cdhashes && cdhashesCount > 0)
+		result = jb_trustcache_add_cdhashes(cdhashes, cdhashesCount);
+	free(cdhashes);
+	return result;
 }
 
 int roothide_trust_executable_recurse(const char *executablePath, const char *processWorkingDir, xpc_object_t preferredArchsArray)
@@ -144,8 +144,12 @@ static int roothide_blacklist_check(audit_token_t *callerToken, const char* chec
 
 static int roothide_jailbreakd_lookup(audit_token_t *callerToken, xpc_object_t *portOut)
 {
-	*portOut = xpc_mach_send_create(jailbreakdClientPort());
-	return 0;
+	if (!portOut || !jailbreakd_is_ready()) return -1;
+	mach_port_t port = jailbreakdClientPort();
+	if (!MACH_PORT_VALID(port)) return -1;
+	*portOut = xpc_mach_send_create(port);
+	if (!*portOut) mach_port_deallocate(mach_task_self(), port);
+	return *portOut ? 0 : -1;
 }
 
 static int roothide_jailbreakd_checkin(audit_token_t *callerToken, xpc_object_t *portOut)
@@ -153,17 +157,23 @@ static int roothide_jailbreakd_checkin(audit_token_t *callerToken, xpc_object_t 
 	pid_t pid = audit_token_to_pid(*callerToken);
 	uid_t uid = audit_token_to_euid(*callerToken);
 
-	if(uid != 0) return -1;
+	if(uid != 0 || !portOut || !jailbreakd_is_ready()) return -1;
 	char executablePath[PATH_MAX] = {0};
 	const char *expectedPath = JBROOT_PATH("/basebin/jailbreakd");
+	char expectedRealPath[PATH_MAX] = {0};
+	char executableRealPath[PATH_MAX] = {0};
 	if (!expectedPath || proc_pidpath_audittoken(callerToken, executablePath, sizeof(executablePath)) <= 0 ||
-	    strcmp(executablePath, expectedPath) != 0) {
+	    !realpath(expectedPath, expectedRealPath) ||
+	    !realpath(executablePath, executableRealPath) ||
+	    strcmp(executableRealPath, expectedRealPath) != 0) {
 		return -1;
 	}
 
+	mach_port_t port = jailbreakdServerPort();
+	if (!MACH_PORT_VALID(port)) return -1;
+	*portOut = xpc_mach_recv_create(port);
+	if (!*portOut) return -1;
 	setJailbreakdProcess(pid);
-
-	*portOut = xpc_mach_recv_create(jailbreakdServerPort());
 	return 0;
 }
 
@@ -179,7 +189,7 @@ static int roothide_set_dyld_patch(audit_token_t *callerToken, bool enabled)
 	uid_t uid = audit_token_to_euid(*callerToken);
 
     uint32_t csFlags = 0;
-    csops(pid, CS_OPS_STATUS, &csFlags, sizeof(csFlags));
+	if (csops(pid, CS_OPS_STATUS, &csFlags, sizeof(csFlags)) != 0) return -1;
 
 	if(uid != 0 && (csFlags & CS_PLATFORM_BINARY)==0) {
 		JBLogError("roothide_set_dyld_patch: denying request from %d,%d", pid, uid);

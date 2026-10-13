@@ -2,6 +2,8 @@
 #define JAILBREAKD_H
 
 #include <unistd.h>
+#include <stdbool.h>
+#include <mach/mach.h>
 
 typedef enum {
 	JBD_MSG_TEST_CALL = 101,
@@ -17,6 +19,7 @@ typedef enum {
 void enableJBDLog(void* debugLog, void* errorLog);
 
 int initJailbreakd(bool firstLoad);
+bool jailbreakd_is_ready(void);
 
 void setJailbreakdProcess(pid_t pid);
 

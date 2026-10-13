@@ -245,13 +245,34 @@ int loadSinature(int fd, struct mach_header_64* header)
 static uint64_t get_symbol(const char* path, const char* name)
 {
     void *csHandle = dlopen("/System/Library/PrivateFrameworks/CoreSymbolication.framework/CoreSymbolication", RTLD_NOW);
+    if (!csHandle || !path || !name) {
+        JBLogError("CoreSymbolication is unavailable; refusing dyld symbol resolution");
+        if (csHandle) dlclose(csHandle);
+        return 0;
+    }
 	CSSymbolicatorRef (*__CSSymbolicatorCreateWithPathAndArchitecture)(const char* path, cpu_type_t type) = dlsym(csHandle, "CSSymbolicatorCreateWithPathAndArchitecture");
 	CSSymbolRef (*__CSSymbolicatorGetSymbolWithMangledNameAtTime)(CSSymbolicatorRef cs, const char* name, uint64_t time) = dlsym(csHandle, "CSSymbolicatorGetSymbolWithMangledNameAtTime");
 	CSRange (*__CSSymbolGetRange)(CSSymbolRef sym) = dlsym(csHandle, "CSSymbolGetRange");
 
+    if (!__CSSymbolicatorCreateWithPathAndArchitecture ||
+        !__CSSymbolicatorGetSymbolWithMangledNameAtTime || !__CSSymbolGetRange) {
+        JBLogError("CoreSymbolication is missing a required symbol");
+        dlclose(csHandle);
+        return 0;
+    }
+
 	CSSymbolicatorRef symbolicator = __CSSymbolicatorCreateWithPathAndArchitecture(path, CPU_TYPE_ARM64);
+	if (!symbolicator) {
+        dlclose(csHandle);
+        return 0;
+    }
 	CSSymbolRef symbol = __CSSymbolicatorGetSymbolWithMangledNameAtTime(symbolicator, name, 0);
+	if (!symbol) {
+        dlclose(csHandle);
+        return 0;
+    }
 	CSRange range = __CSSymbolGetRange(symbol);
+    dlclose(csHandle);
     return range.location;
 }
 

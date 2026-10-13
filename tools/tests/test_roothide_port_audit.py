@@ -1,6 +1,9 @@
 """Regression checks for the critical Dopamine/RootHide IPC namespace clash."""
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from tools import roothide_port_audit as audit
@@ -42,6 +45,30 @@ class IPCDomainTests(unittest.TestCase):
         )
         self.assertFalse(result["ready"])
         self.assertTrue(any("Wire an authorized" in item for item in result["missing"]))
+
+    def test_rejects_missing_device_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(audit, "ROOT", Path(directory)):
+                result = audit.hardware_evidence_check()
+        self.assertFalse(result["ready"])
+        self.assertTrue(any("not supplied" in text for text in result["missing"]))
+
+    def test_rejects_fake_device_pass_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "validation").mkdir()
+            (root / "validation" / "device-tests.json").write_text(
+                json.dumps({"tested_commit": "not-a-git-sha", "device_model": "test",
+                            "ios_version": "16.0", "scenarios": {
+                                "initial_boot": {"result": "pass", "log": "validation/logs/missing.txt",
+                                                 "sha256": "00"}}}),
+                encoding="utf-8",
+            )
+            with patch.object(audit, "ROOT", root):
+                result = audit.hardware_evidence_check()
+        self.assertFalse(result["ready"])
+        self.assertTrue(any("hash" in problem or "Git" in problem
+                            for problem in result["missing"]))
 
 
 if __name__ == "__main__":

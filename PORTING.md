@@ -44,9 +44,11 @@ patches, code-signing/trust handling, bootstrap dependencies and jailbroken
 runtime has not been compiled or tested. Some offsets required by the donor
 are absent from Dopamine 3's kernel patchfinder and are guarded instead of
 being used unchecked. RootHide's executable `bootstrapper` in the donor
-was only a placeholder. The source audit reports 7 of 8 prerequisites;
-the final activation check deliberately remains false. Enabling it based on
-source presence alone would be unsafe. No RootHide IPA/TIPA has been built.
+was only a placeholder. The audit checks source wiring, an explicit
+activation flag, and independent physical-device evidence. Activation
+and hardware evidence deliberately remain absent. Enabling RootHide based
+on source presence alone would be unsafe. No RootHide IPA/TIPA has been
+compiled or validated on hardware in this workspace.
 
 ## Build attempt and reviewed defects (14 October 2026)
 
@@ -76,6 +78,48 @@ sequence requires a full compatibility audit. Incomplete first setups
 remain quarantined rather than automatically deleted, and need an
 explicit, safe recovery flow. Kernel offsets, dyld vtable hooks,
 launchd state, signing, and reboot flows all need device testing.
+
+## Reproducible macOS diagnostic build
+
+The private experimental fork uses `.github/workflows/main.yml` on
+`macos-15`. RootHide uses Theos revision
+`cfba89a53a05b4a1b822121158acc3669c20602f`; stock Dopamine uses
+the separate pinned official Theos revision. The iPhoneOS 16.5 SDK from
+release `master-146e41f` has SHA-256
+`5e0fd3f01266cce4ce012d4a99b38eb56578fca40d09edc81cd83dee958202fb`.
+Both stock Procursus bootstrap downloads are pinned by SHA-256 as well.
+The CI checkout pulls pinned BaseBin submodules, and pins procursus-action
+and trustcache source revisions.
+
+For a Mac with Xcode, Theos, a validated SDK, ldid, trustcache, GNU Make
+and libarchive (as installed by the workflow), execute:
+
+```bash
+git submodule update --init --recursive
+export THEOS="$(pwd)/theos"
+export ROOTHIDE_EXPERIMENTAL_BUILD=1
+bash tools/macos_build_readiness.sh
+cd Application/Dopamine/Resources
+bash download_bootstraps.sh
+cd ../../..
+gmake -j"$(sysctl -n hw.logicalcpu)" NIGHTLY=1
+python3 tools/verify_roothide_build.py --ipa Application/Dopamine.ipa --json
+```
+
+If compilation and package inspection pass on a RootHide branch, Actions
+stores `RootHide3-COMPILE-ONLY-NOT-FOR-INSTALL` for seven days.
+This is **not** a verified jailbreak release and must not be installed.
+Its inspection checks the five pinned RootHide assets, IPA and BaseBin
+structure, Mach-O image signatures and required hooks; CI also verifies
+arm64/arm64e slices via `lipo`. The standard `Dopamine` artifact is
+not published for RootHide branches. The strict publish gate additionally
+requires reviewed activation and genuine device evidence following
+`validation/README.md`; it intentionally fails until then.
+
+The Windows source-work machine has no Xcode/macOS compiler. A functioning
+macOS runner (or resolving the GitHub-hosted runner billing problem) is
+required before any actual IPA can be produced. No billing modification
+is performed by this project.
 
 ## Integration boundaries
 

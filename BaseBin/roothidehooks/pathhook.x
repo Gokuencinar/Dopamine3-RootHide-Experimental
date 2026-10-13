@@ -11,17 +11,22 @@ CFURLRef (*orig__CFCopyHomeDirURLForUser)(const char *username, bool fallBackToH
 CFURLRef new__CFCopyHomeDirURLForUser(const char *username, bool fallBackToHome)
 {
 	CFURLRef url = orig__CFCopyHomeDirURLForUser(username, fallBackToHome);
+	if (!url) return NULL;
 
 	char path[PATH_MAX]={0};
 	if(CFURLGetFileSystemRepresentation(url, 0, (UInt8*)path, sizeof(path)))
 	{
 		const char* jbpath = rootfs(path);
-		if(strncmp(jbpath, "/rootfs/", sizeof("/rootfs/")-1) == 0)
+		if(jbpath && strncmp(jbpath, "/rootfs/", sizeof("/rootfs/")-1) == 0)
 		{
-			CFRelease(url);
-
 			const char* newpath = jbroot(path);
-			url = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8*)newpath, strlen(newpath), true);
+			if (newpath) {
+				CFURLRef redirected = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault, (const UInt8*)newpath, strlen(newpath), true);
+				if (redirected) {
+					CFRelease(url);
+					url = redirected;
+				}
+			}
 		}
 	}
 

@@ -5,6 +5,8 @@ functionality. Device testing remains necessary before any release.
 """
 
 import hashlib
+import io
+import tarfile
 import unittest
 
 from tools import roothide_port_audit as audit
@@ -58,6 +60,62 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn('@"etc/apt/sources.list.d/procursus.list"', bootstrap)
         self.assertIn('@"etc/apt/sources.list"', bootstrap)
         self.assertIn("https://roothide.github.io/procursus", bootstrap)
+
+    def test_arm64_only_devices_are_refused_before_root_creation(self) -> None:
+        bootstrap = self.source("Application/Dopamine/Jailbreak/DOBootstrapper.m")
+        self.assertIn("if (![[DOEnvironmentManager sharedManager] isArm64e])", bootstrap)
+        self.assertIn("arm64 is unsupported", bootstrap)
+
+    def test_krw_can_resolve_libjailbreak_inside_hidden_root(self) -> None:
+        makefile = self.source("Packages/libkrw-provider/Makefile")
+        self.assertIn("-rpath /var/jb/usr/lib", makefile)
+        self.assertIn("-rpath @loader_path/..", makefile)
+
+    def test_core_symbolication_lookup_fails_closed_without_framework(self) -> None:
+        source = self.source("BaseBin/libjailbreak/src/roothider/dyld_patch.m")
+        self.assertIn("if (!csHandle || !path || !name)", source)
+        self.assertIn("if (!__CSSymbolicatorCreateWithPathAndArchitecture ||", source)
+        self.assertIn("if (!symbolicator)", source)
+        self.assertIn("if (!symbol)", source)
+
+    def test_stock_bootstraps_have_pinned_content_hashes(self) -> None:
+        script = self.source("Application/Dopamine/Resources/download_bootstraps.sh")
+        self.assertIn("a99b39bb0344ee3b42bb961325038dceae7daaec500976f3b822cf36cccf020a", script)
+        self.assertIn("8354c3aa1ecdad8ebc47d9a76dfca6f830a2b757278068bd33b98bf1d638a9cb", script)
+        self.assertIn("shasum -a 256 -c -", script)
+
+    def test_roothide_donor_packages_have_arm64e_metadata(self) -> None:
+        names = {
+            "roothideapp.deb": "com.roothide.manager",
+            "roothide_sileo.deb": "org.coolstar.sileo",
+            "roothide_zebra.deb": "xyz.willy.zebra",
+        }
+        for filename, package_id in names.items():
+            with self.subTest(package=filename):
+                raw = (audit.ROOT / "Application/Dopamine/Resources" / filename).read_bytes()
+                self.assertTrue(raw.startswith(b"!<arch>\n"))
+                cursor, control = 8, None
+                while cursor + 60 <= len(raw):
+                    header = raw[cursor:cursor + 60]
+                    member_name = header[:16].strip().rstrip(b"/").decode("ascii")
+                    size = int(header[48:58])
+                    payload = raw[cursor + 60:cursor + 60 + size]
+                    cursor += 60 + size + (size % 2)
+                    if member_name.startswith("control.tar."):
+                        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+                            member = next(item for item in archive.getmembers()
+                                          if item.name in ("./control", "control"))
+                            control = archive.extractfile(member).read().decode("utf-8")
+                        break
+                self.assertIsNotNone(control)
+                self.assertIn(f"Package: {package_id}", control)
+                self.assertIn("Architecture: iphoneos-arm64e", control)
+
+    def test_ci_disallows_unverified_release_upload(self) -> None:
+        workflow = self.source(".github/workflows/main.yml")
+        self.assertIn("RootHide3-COMPILE-ONLY-NOT-FOR-INSTALL", workflow)
+        self.assertIn("python3 tools/roothide_port_audit.py --strict", workflow)
+        self.assertIn("if: ${{ !startsWith(github.ref_name, 'roothide-') }}", workflow)
 
     def test_root_hide_skips_stock_fakelib_and_protection(self) -> None:
         source = self.source("Application/Dopamine/Jailbreak/DOJailbreaker.m")

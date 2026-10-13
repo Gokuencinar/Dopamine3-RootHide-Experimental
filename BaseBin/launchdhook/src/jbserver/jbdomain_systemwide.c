@@ -13,6 +13,7 @@
 #include <libjailbreak/primitives.h>
 #include <libjailbreak/codesign.h>
 #include <libjailbreak/txm.h>
+#include <libjailbreak/roothider.h>
 
 bool gSystemwideDomainEnabled = true;
 void systemwide_domain_set_enabled(bool enabled)
@@ -60,6 +61,10 @@ char *combine_strings(char separator, char **components, int count)
 
 bool systemwide_domain_allowed(audit_token_t clientToken)
 {
+	// RootHide's blacklist must also apply to the Dopamine 3 systemwide
+	// domain. Otherwise a hidden app can still query the jailbreak root,
+	// request trust operations and check in through the stock endpoint.
+	if (roothide_is_active() && isBlacklistedToken(&clientToken)) return false;
 	if (!gSystemwideDomainEnabled) {
 		// While the jailbreak is hidden, we need to disable the systemwide domain
 		pid_t pid = audit_token_to_pid(clientToken);
@@ -193,7 +198,23 @@ int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, 
 	systemwide_get_jbroot(rootPathOut);
 	systemwide_get_boot_uuid(bootUUIDOut);
 
-	// Generate sandbox extensions for the requesting process
+	// RootHide's hidden bootstrap keeps its writable tree in the app-group
+	// location. The stock extensions only grant write access to <jbroot>/var/mobile
+	// and cannot substitute for those RootHide extensions.
+	if (roothide_is_active()) {
+		uint32_t csFlags = 0;
+		bool isPlatformProcess = csops(pid, CS_OPS_STATUS, &csFlags, sizeof(csFlags)) == 0
+			&& (csFlags & CS_PLATFORM_BINARY) != 0;
+		*sandboxExtensionsOut = generate_sandbox_extensions(processToken, isPlatformProcess);
+		if (!*sandboxExtensionsOut) {
+			free(*rootPathOut);
+			free(*bootUUIDOut);
+			*rootPathOut = NULL;
+			*bootUUIDOut = NULL;
+			return -1;
+		}
+	}
+	else {
 	char *sandboxExtensionsArr[] = {
 		// Make /var/jb readable and executable
 		sandbox_extension_issue_file_to_process("com.apple.app-sandbox.read", JBROOT_PATH(""), 0, *processToken),
@@ -208,6 +229,7 @@ int systemwide_process_checkin(audit_token_t *processToken, char **rootPathOut, 
 		if (sandboxExtensionsArr[i]) {
 			free(sandboxExtensionsArr[i]);
 		}
+	}
 	}
 
 	bool fullyDebugged = false;

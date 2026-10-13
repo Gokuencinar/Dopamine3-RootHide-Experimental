@@ -6,8 +6,10 @@ source. It does not establish that a jailbreak is safe or works on a device.
 """
 
 import argparse
+import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -43,6 +45,72 @@ def ipc_domain_check() -> dict:
     if "gRootHideDomain" not in read("BaseBin/launchdhook/src/jbserver/jbserver_global.c"):
         problems.append("Wire an authorized RootHide server domain before enabling the client")
     return {"component": "XPC domain separation", "ready": not problems, "missing": problems}
+
+
+REQUIRED_DEVICE_CHECKS = (
+    "initial_boot",
+    "hidden_bootstrap",
+    "path_and_process_hiding",
+    "package_installation",
+    "tweak_injection_and_blacklist",
+    "re_jailbreak_and_userspace_reboot",
+    "uninstall_and_recovery",
+    "stock_dopamine_coexistence",
+)
+
+
+def hardware_evidence_check() -> dict:
+    """An explicit human-reviewed evidence index, never a source-only green."""
+    path = ROOT / "validation/device-tests.json"
+    if not path.is_file():
+        return {"component": "Hardware validation evidence",
+                "ready": False,
+                "missing": ["validation/device-tests.json (not supplied; do not fabricate device results)"]}
+    problems = []
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        tested_commit = manifest.get("tested_commit")
+        if not isinstance(tested_commit, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", tested_commit):
+            problems.append("Evidence needs a full tested Git commit hash")
+        else:
+            # Evidence logs necessarily require a later commit. Allow only
+            # validation/** changes after the exact *tested code*; any source
+            # modification invalidates the recorded device evidence.
+            ancestor = subprocess.run(["git", "merge-base", "--is-ancestor",
+                                       tested_commit, "HEAD"], cwd=ROOT,
+                                      capture_output=True, check=False)
+            if ancestor.returncode != 0:
+                problems.append("Tested Git commit is not an ancestor of HEAD")
+            else:
+                changed = subprocess.check_output(
+                    ["git", "diff", "--name-only", tested_commit, "HEAD"],
+                    cwd=ROOT, text=True).splitlines()
+                if any(not name.startswith("validation/") for name in changed):
+                    problems.append("Source code changed since device validation")
+        if not manifest.get("device_model") or not manifest.get("ios_version"):
+            problems.append("Device model and iOS version are required")
+        scenarios = manifest.get("scenarios")
+        if not isinstance(scenarios, dict):
+            scenarios = {}
+        for name in REQUIRED_DEVICE_CHECKS:
+            entry = scenarios.get(name)
+            if not isinstance(entry, dict) or entry.get("result") != "pass":
+                problems.append(f"No passing hardware evidence for {name}")
+                continue
+            relative = entry.get("log")
+            digest = entry.get("sha256")
+            if not isinstance(relative, str) or not relative.startswith("validation/logs/"):
+                problems.append(f"Log path is missing or outside validation/logs for {name}")
+                continue
+            absolute = (ROOT / relative).resolve()
+            if not absolute.is_relative_to((ROOT / "validation/logs").resolve()) or not absolute.is_file():
+                problems.append(f"Hardware log not present for {name}")
+            elif hashlib.sha256(absolute.read_bytes()).hexdigest() != digest:
+                problems.append(f"Hardware log hash does not match for {name}")
+    except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
+        problems.append(f"Hardware evidence cannot be verified: {exc}")
+    return {"component": "Hardware validation evidence", "ready": not problems,
+            "missing": problems}
 
 
 def inspect() -> list[dict]:
@@ -116,6 +184,7 @@ def inspect() -> list[dict]:
                 ("Application/Dopamine/Jailbreak/DOBootstrapper.m", "#define ROOTHIDE3_BOOTSTRAP_READY 1"),
             ),
         ),
+        hardware_evidence_check(),
     ]
 
 

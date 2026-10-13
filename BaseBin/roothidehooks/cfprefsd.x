@@ -81,7 +81,7 @@ BOOL new_CFPrefsGetPathForTriplet(CFStringRef identifier, CFStringRef user, BOOL
 			NSLog(@"Plist redirected to jbroot:%@", origPath);
 			const char* newpath = jbroot(origPath.UTF8String);
 			//buffer size=1024 in CFXPreferences_fileProtectionClassForIdentifier_user_host_container___block_invoke
-			if(strlen(newpath) < 1024) {
+			if(newpath && strlen(newpath) < 1024) {
 				strcpy((char*)buffer, newpath);
 				NSLog(@"CFPrefsGetPathForTriplet redirect to %s", buffer);
 			}
@@ -117,9 +117,11 @@ void* new__CFPrefsDaemon_handleMessage_fromPeer_replyHandler__(id self, xpc_obje
 	// NSLog(@"CFPrefsDaemon: handleMessage Operation=%lld, msg=%s", xpc_dictionary_get_int64(message, "CFPreferencesOperation"), desc);
 	// if(desc) free(desc);
 
+	pid_t previousClientPid = gCurrentClientPid;
 	gCurrentClientPid = clientPid;
-
-	return DISPATCH_orig__CFPrefsDaemon_handleMessage_fromPeer_replyHandler__(self, message, connection, replyHandler);
+	void *result = DISPATCH_orig__CFPrefsDaemon_handleMessage_fromPeer_replyHandler__(self, message, connection, replyHandler);
+	gCurrentClientPid = previousClientPid;
+	return result;
 }
 void* LEGACY_new__CFPrefsDaemon_handleMessage_fromPeer_replyHandler__(id self, SEL selector, xpc_object_t message, xpc_connection_t connection, void* replyHandler)
 {

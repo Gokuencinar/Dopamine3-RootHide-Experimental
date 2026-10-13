@@ -12,12 +12,6 @@ on:
     paths-ignore:
       - ".gitignore"
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 1 1 *'
-    - cron: '0 0 1 4 *'
-    - cron: '0 0 30 6 *'
-    - cron: '0 0 28 9 *'
-    - cron: '0 0 27 12 *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,20 +19,20 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Xcode Setup
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # peeled commit for v1
         with:
           xcode-version: latest-stable
 
       - name: Checkout
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
         with:
             submodules: recursive
 
       - name: Install Procursus
-        uses: dhinakg/procursus-action@main
+        uses: dhinakg/procursus-action@4526d5e64410da26bea8073926c0bf8e779293f1
         with:
           packages: ldid findutils sed coreutils make
 
@@ -49,33 +43,43 @@ jobs:
 
       - name: Install THEOS
         run: |
-          set -x
+          set -euo pipefail
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
-          mkdir -p $THEOS
+          # Use an explicitly pinned Theos revision, not an installer that
+          # updates a mutable HEAD. Preserve its recursive vendor submodules.
           # The RootHide tweak targets use a different Theos package scheme.
           # Keep official Theos for the upstream Dopamine branches.
           THEOS_REPO=theos/theos
+          THEOS_REV=304e0799973e8145f32e4ca2de6c747a84b758ce
           if [[ "$GITHUB_REF_NAME" == roothide-* ]]; then
             THEOS_REPO=roothide/theos
+            THEOS_REV=cfba89a53a05b4a1b822121158acc3669c20602f
           fi
-          curl -fsSL "https://raw.githubusercontent.com/${THEOS_REPO}/master/bin/install-theos" -o install-theos.sh
-          gsed -E "/^\s*get_theos\s*$/,+1 s/^(\s*)(get_sdks)\s*$/\1mkdir -p \${THEOS}\/sdks\n\1touch \${THEOS}\/sdks\/sdk\n\1\2/g" -i install-theos.sh
-          bash install-theos.sh
-          curl -fL https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz --output "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
-          # This download is XZ-compressed, not gzip-compressed. gunzip
-          # always failed before any of our RootHide targets could compile.
+          git clone --recursive "https://github.com/${THEOS_REPO}.git" "$THEOS"
+          git -C "$THEOS" checkout --detach "$THEOS_REV"
+          git -C "$THEOS" submodule update --init --recursive
+          test "$(git -C "$THEOS" rev-parse HEAD)" = "$THEOS_REV"
+          mkdir -p "$THEOS/sdks"
+          curl -fL --retry 3 \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz \
+            --output "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
+          echo "5e0fd3f01266cce4ce012d4a99b38eb56578fca40d09edc81cd83dee958202fb  $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz" | shasum -a 256 -c -
+          # Decode the verified XZ archive (not gzip).
           tar -xJf "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz" -C "$THEOS/sdks"
           rm "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"
+          test -n "$(find "$THEOS/sdks" -type d -name '*.sdk' -print -quit)"
           cd $BASEDIR
 
       - name: Build and Install trustcache
         run: |
-          set -x
+          set -euo pipefail
+          brew install openssl@3
           git clone https://github.com/CRKatri/trustcache
+          git -C trustcache checkout --detach aa0e8847529cf76576fce8d2dbc9e088c8f1a0df
           cd trustcache
-          export CFLAGS="$CFLAGS -I$(brew --prefix openssl)/include -arch arm64"
-          export LDFLAGS="$LDFLAGS -L$(brew --prefix openssl)/lib -arch arm64"
+          export CFLAGS="${CFLAGS:-} -I$(brew --prefix openssl@3)/include -arch arm64"
+          export LDFLAGS="${LDFLAGS:-} -L$(brew --prefix openssl@3)/lib -arch arm64"
           gmake -j$(sysctl -n hw.logicalcpu) OPENSSL=1
           sudo cp trustcache /opt/procursus/bin/
 
@@ -95,16 +99,53 @@ jobs:
 
       - name: Download Bootstraps
         run: |
-            set -x
+            set -euo pipefail
             cd Application/Dopamine/Resources
-            ./download_bootstraps.sh
+            bash ./download_bootstraps.sh
 
       - name: Build
         run: |
-          set -x
+          set -euo pipefail
           export BASEDIR="$(pwd)"
           export THEOS="${BASEDIR}/theos"
+          bash tools/macos_build_readiness.sh
           gmake -j$(sysctl -n hw.logicalcpu) NIGHTLY=1
+
+      - name: Check RootHide binary architecture slices
+        if: startsWith(github.ref_name, 'roothide-')
+        run: |
+          set -euo pipefail
+          for binary in libjailbreak.dylib launchdhook.dylib systemhook.dylib roothidehooks.dylib rootlesshooks.dylib; do
+            file="BaseBin/.build/$binary"
+            test -f "$file"
+            architectures="$(xcrun lipo -archs "$file")"
+            echo "$binary: $architectures"
+            [[ " $architectures " == *" arm64 "* ]] || { echo "$binary lacks arm64" >&2; exit 1; }
+            [[ " $architectures " == *" arm64e "* ]] || { echo "$binary lacks arm64e" >&2; exit 1; }
+          done
+
+      # A completed Xcode/ldid build is NOT proof of RootHide functionality.
+      # Save it in a plainly quarantined diagnostic artifact so developers can
+      # inspect linker output without distributing it as a jailbreak release.
+      - name: Inspect quarantined RootHide build
+        if: startsWith(github.ref_name, 'roothide-')
+        run: |
+          set -euo pipefail
+          python3 tools/verify_roothide_build.py --ipa Application/Dopamine.ipa --json | tee roothide-build-inspection.json
+          printf 'ROOT HIDE 3: COMPILE-ONLY, NOT INSTALLABLE AS ROOTHIDE\nCommit: %s\nActivation: DISABLED\nRuntime/device verification: NONE\n' "$GITHUB_SHA" > ROOT_HIDE_DO_NOT_INSTALL.txt
+
+      - name: Upload quarantined RootHide compile artifact
+        if: startsWith(github.ref_name, 'roothide-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: RootHide3-COMPILE-ONLY-NOT-FOR-INSTALL
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ github.workspace }}/Application/Dopamine.ipa
+            ${{ github.workspace }}/BaseBin/basebin.tar
+            ${{ github.workspace }}/roothide-build-inspection.json
+            ${{ github.workspace }}/ROOT_HIDE_DO_NOT_INSTALL.txt
 
       # Compile first so early RootHide port errors are visible in CI, but
       # never upload an unverified stock artifact as a RootHide release.
@@ -113,8 +154,10 @@ jobs:
         run: python3 tools/roothide_port_audit.py --strict
 
       - name: Upload Artifact
+        # Never label the stock IPA as a verified RootHide build.
+        if: ${{ !startsWith(github.ref_name, 'roothide-') }}
         id: dopamine-latest-upload
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v4
         with:
           name: Dopamine
           path: |

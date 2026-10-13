@@ -9,6 +9,10 @@
 
 all: basebin.tar
 
+# All components share .build/.include and the signing/trustcache staging tree.
+# Avoid racing their destructive initialization and concurrent tar packaging.
+.NOTPARALLEL:
+
 subprojects: ChOma XPF MachOMerger opainject libjailbreak systemhook forkfix launchdhook hookd boomerang jbctl idownloadd watchdoghook rootlesshooks roothidehooks jailbreakd bootstrapper dopamine
 
 ChOma: .build .include
