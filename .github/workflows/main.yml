@@ -37,6 +37,11 @@ jobs:
         with:
             submodules: recursive
 
+      # Never publish a stock Dopamine IPA as a RootHide build while the port is incomplete.
+      - name: Check RootHide port prerequisites
+        if: startsWith(github.ref_name, 'roothide-')
+        run: python3 tools/roothide_port_audit.py --strict
+
       - name: Install Procursus
         uses: dhinakg/procursus-action@main
         with:
