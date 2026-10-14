@@ -25,7 +25,10 @@ void enableXPCLog(void* debugLog, void* errorLog);
 
 int main(int argc, char* argv[])
 {
-	crashreporter_start();
+	// The RootHide 2 crash reporter is not linked into Dopamine 3 libjailbreak:
+	// its pause/resume ABI conflicts with launchdhook's crash reporter. Keep
+	// this process on the platform crash-report path until a separate daemon
+	// reporter can be validated without the old panic/reboot behavior.
 
 	setJetsamLimit(50, false);
 

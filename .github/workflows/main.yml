@@ -121,6 +121,10 @@ jobs:
             bash ./download_bootstraps.sh
 
       - name: Build
+        # The readiness script must use the same RootHide classification as
+        # Theos selection, including PR refs such as 123/merge.
+        env:
+          ROOTHIDE_EXPERIMENTAL_BUILD: ${{ steps.roothide_port.outputs.is_port == 'true' && '1' || '0' }}
         run: |
           set -euo pipefail
           export BASEDIR="$(pwd)"

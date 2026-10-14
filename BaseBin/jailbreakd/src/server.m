@@ -27,13 +27,12 @@ void jailbreakd_received_message(mach_port_t port)
 			}
 
 			if (!message || xpc_get_type(message) != XPC_TYPE_DICTIONARY) {
-				if (message) xpc_release(message);
+				// xpc_object_t is ARC-managed in this Objective-C target.
 				return;
 			}
 
 			xpc_object_t reply = xpc_dictionary_create_reply(message);
 			if (!reply) {
-				xpc_release(message);
 				return;
 			}
 
@@ -119,21 +118,20 @@ void jailbreakd_received_message(mach_port_t port)
 
 					case JBD_MSG_EXEC_TRACE_START: {
 						//dead lock: jbd->ptrace->kernel->amfi port->launchd->spawn amfid->jdb
-						xpc_object_t asyncMessage = xpc_retain(message);
-						xpc_object_t asyncReply = xpc_retain(reply);
-						dispatch_async(dispatch_get_global_queue(0, 0), ^{
+							// ARC and dispatch block capture keep these XPC objects alive
+							// until the asynchronous response has been sent.
+							xpc_object_t asyncMessage = message;
+							xpc_object_t asyncReply = reply;
+							dispatch_async(dispatch_get_global_queue(0, 0), ^{
 							int64_t result = -1;
 							uint64_t traced = xpc_dictionary_get_uint64(asyncMessage, "traced");
 							const char* execfile = xpc_dictionary_get_string(asyncMessage, "execfile");
 							JBLogDebug("exec trace start: %d %s", clientPid, execfile);
 							result = execTraceProcess(clientPid, traced);
-							xpc_dictionary_set_int64(asyncReply, "result", result);
-							jailbreakd_reply_message(msgId, asyncReply);
-							xpc_release(asyncReply);
-							xpc_release(asyncMessage);
-						});
-						xpc_release(reply);
-						reply = nil; //reply later
+								xpc_dictionary_set_int64(asyncReply, "result", result);
+								jailbreakd_reply_message(msgId, asyncReply);
+							});
+							reply = nil; //reply later
 					break;
 				}
 
@@ -184,8 +182,6 @@ void jailbreakd_received_message(mach_port_t port)
 		}
 			if (reply) {
 				jailbreakd_reply_message(msgId, reply);
-				xpc_release(reply);
 			}
-			xpc_release(message);
-	}
+		}
 }

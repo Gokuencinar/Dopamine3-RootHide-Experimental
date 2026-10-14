@@ -16,30 +16,87 @@
 #include <libjailbreak/jbroot.h>
 #include <libjailbreak/hookd.h>
 #include <libkern/OSCacheControl.h>
+#include <stdint.h>
+#include <errno.h>
 
-static bool is_roothide_root_path(const char *root)
+// RootHide's jbrand stores a checksum in its low byte. Do not trust a
+// .jbroot-looking path merely because its directory name has 16 hex digits.
+static bool is_roothide_root_path_n(const char *root, size_t length)
 {
 	static const char prefix[] = "/var/containers/Bundle/Application/.jbroot-";
 	static const char privatePrefix[] = "/private/var/containers/Bundle/Application/.jbroot-";
 	const char *brand = NULL;
 	if (!root) return false;
-	if (!strncmp(root, prefix, sizeof(prefix) - 1)) {
+	if (length == sizeof(prefix) - 1 + 16 && !memcmp(root, prefix, sizeof(prefix) - 1)) {
 		brand = root + sizeof(prefix) - 1;
 	}
-	else if (!strncmp(root, privatePrefix, sizeof(privatePrefix) - 1)) {
+	else if (length == sizeof(privatePrefix) - 1 + 16 && !memcmp(root, privatePrefix, sizeof(privatePrefix) - 1)) {
 		brand = root + sizeof(privatePrefix) - 1;
 	}
-	if (!brand || strlen(brand) != 16) return false;
+	if (!brand) return false;
+	uint64_t value = 0;
 	for (size_t i = 0; i < 16; i++) {
-		if (!((brand[i] >= '0' && brand[i] <= '9') ||
-		      (brand[i] >= 'A' && brand[i] <= 'F'))) return false;
+		unsigned digit;
+		if (brand[i] >= '0' && brand[i] <= '9') digit = brand[i] - '0';
+		else if (brand[i] >= 'A' && brand[i] <= 'F') digit = brand[i] - 'A' + 10;
+		else return false;
+		value = (value << 4) | digit;
 	}
-	return true;
+	if (!value) return false;
+	uint8_t check = (uint8_t)(value >> 8 ^ value >> 16 ^ value >> 24 ^
+	                          value >> 32 ^ value >> 40 ^ value >> 48 ^ value >> 56);
+	return check == (uint8_t)value;
+}
+
+bool systemhook_is_roothide_root_path(const char *root)
+{
+	return root && is_roothide_root_path_n(root, strlen(root));
+}
+
+static bool is_systemhook_insertion(const char *entry, size_t length)
+{
+	static const char suffix[] = "/basebin/systemhook.dylib";
+	const size_t suffixLength = sizeof(suffix) - 1;
+	if (length == sizeof(STOCK_HOOK_DYLIB_PATH) - 1 &&
+	    !memcmp(entry, STOCK_HOOK_DYLIB_PATH, length)) return true;
+	return length > suffixLength &&
+	       !memcmp(entry + length - suffixLength, suffix, suffixLength) &&
+	       is_roothide_root_path_n(entry, length - suffixLength);
+}
+
+// Normalize both jailbreak hook paths, including old randomized RootHide
+// roots, without touching any other dylibs in the caller's environment.
+// Every byte written is bounded by existingLength + selectedLength + 2.
+static char *normalized_systemhook_inserts(const char *existing, const char *selected)
+{
+	const size_t existingLength = existing ? strlen(existing) : 0;
+	const size_t selectedLength = selected ? strlen(selected) : 0;
+	if (selectedLength > SIZE_MAX - 2 || existingLength > SIZE_MAX - selectedLength - 2) return NULL;
+	char *result = malloc(existingLength + selectedLength + 2);
+	if (!result) return NULL;
+	size_t used = 0;
+	if (selectedLength) {
+		memcpy(result, selected, selectedLength);
+		used = selectedLength;
+	}
+	for (const char *it = existing; it && *it;) {
+		const char *end = strchr(it, ':');
+		size_t partLength = end ? (size_t)(end - it) : strlen(it);
+		if (partLength && !is_systemhook_insertion(it, partLength)) {
+			if (used) result[used++] = ':';
+			memcpy(result + used, it, partLength);
+			used += partLength;
+		}
+		if (!end) break;
+		it = end + 1;
+	}
+	result[used] = '\0';
+	return result;
 }
 
 const char *systemhook_dylib_path(void)
 {
-	if (!is_roothide_root_path(get_jbroot())) return STOCK_HOOK_DYLIB_PATH;
+	if (!systemhook_is_roothide_root_path(get_jbroot())) return STOCK_HOOK_DYLIB_PATH;
 	// JBROOT_PATH uses stack storage. Copy it into per-thread storage before
 	// returning the selected path to callers in launchd and systemhook.
 	const char *hiddenPath = JBROOT_PATH("/basebin/systemhook.dylib");
@@ -210,16 +267,6 @@ static int spawn_exec_hook_common(bool isExec,
 	}
 
 	const char *existingLibraryInserts = envbuf_getenv((const char **)envp, "DYLD_INSERT_LIBRARIES");
-	__block bool systemHookAlreadyInserted = false;
-	if (existingLibraryInserts) {
-		string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
-			if (!strcmp(existingLibraryInsert, hookDylibPath)) {
-				systemHookAlreadyInserted = true;
-			}
-		});
-	}
-
-	int JBEnvAlreadyInsertedCount = (int)systemHookAlreadyInserted;
 
 	// Check if we can find at least one reason to not insert jailbreak related environment variables
 	// In this case we also need to remove pre existing environment variables if they are already set
@@ -329,61 +376,41 @@ static int spawn_exec_hook_common(bool isExec,
 
 	pid_t childPid = -1;
 
-	if ((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) || (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable)) {
-		// we're already good, just call orig
+	char *normalizedInserts = normalized_systemhook_inserts(existingLibraryInserts,
+	                                                      shouldInsertJBEnv ? hookDylibPath : NULL);
+	if (!normalizedInserts) {
+		errno = ENOMEM;
+		return isExec ? -1 : ENOMEM;
+	}
+	bool envNeedsUpdate = existingLibraryInserts ?
+	                      strcmp(existingLibraryInserts, normalizedInserts) != 0 :
+	                      normalizedInserts[0] != '\0';
+	if (!envNeedsUpdate && !hasSafeModeVariable) {
+		// Environment already contains the desired hook and third-party libraries.
 		r = orig(&childPid, envp);
 	}
 	else {
-		// the state we want to be in is not the state we are in right now
-
+		// Normalize stale/duplicate jailbreak hooks while preserving unrelated dylibs.
 		char **envc = envbuf_mutcopy((const char **)envp);
-
-		if (shouldInsertJBEnv) {
-			if (!systemHookAlreadyInserted) {
-				char newLibraryInsert[strlen(hookDylibPath) + (existingLibraryInserts ? (strlen(existingLibraryInserts) + 1) : 0) + 1];
-				strcpy(newLibraryInsert, hookDylibPath);
-				if (existingLibraryInserts) {
-					strcat(newLibraryInsert, ":");
-					strcat(newLibraryInsert, existingLibraryInserts);
-				}
-				envbuf_setenv(&envc, "DYLD_INSERT_LIBRARIES", newLibraryInsert);
-			}
+		if (envp && !envc) {
+			free(normalizedInserts);
+			errno = ENOMEM;
+			return isExec ? -1 : ENOMEM;
+		}
+		if (normalizedInserts[0]) {
+			envbuf_setenv(&envc, "DYLD_INSERT_LIBRARIES", normalizedInserts);
 		}
 		else {
-			if (systemHookAlreadyInserted && existingLibraryInserts) {
-				if (!strcmp(existingLibraryInserts, hookDylibPath)) {
-					envbuf_unsetenv(&envc, "DYLD_INSERT_LIBRARIES");
-				}
-				else {
-					char *newLibraryInsert = malloc(strlen(existingLibraryInserts)+1);
-					newLibraryInsert[0] = '\0';
-
-					__block bool first = true;
-					string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
-						if (strcmp(existingLibraryInsert, hookDylibPath) != 0) {
-							if (first) {
-								strcpy(newLibraryInsert, existingLibraryInsert);
-								first = false;
-							}
-							else {
-								strcat(newLibraryInsert, ":");
-								strcat(newLibraryInsert, existingLibraryInsert);
-							}
-						}
-					});
-					envbuf_setenv(&envc, "DYLD_INSERT_LIBRARIES", newLibraryInsert);
-
-					free(newLibraryInsert);
-				}
-			}
+			envbuf_unsetenv(&envc, "DYLD_INSERT_LIBRARIES");
+		}
+		if (!shouldInsertJBEnv) {
 			envbuf_unsetenv(&envc, "_SafeMode");
 			envbuf_unsetenv(&envc, "_MSSafeMode");
 		}
-
 		r = orig(&childPid, envc);
-
 		envbuf_free(envc);
 	}
+	free(normalizedInserts);
 
 	if (personaFixUid == 0 || personaFixGid == 0 && childPid != -1) {
 		jbclient_persona_fix(childPid, personaFixUid, personaFixGid);

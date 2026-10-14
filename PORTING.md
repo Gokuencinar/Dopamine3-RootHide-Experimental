@@ -68,6 +68,15 @@ attempts **did start a real macOS runner** without any billing changes:
   implementation also exported these conflicting names. This revision
   removes its unused source from `libjailbreak` and the donor header from
   the public RootHide header, retaining Dopamine 3's own launchd reporter.
+- Run `38489040563`, at `9e6aa9b`, successfully compiled `libjailbreak`,
+  `systemhook`, `launchdhook` and subsequent BaseBin components, then failed
+  compiling the RootHide donor's `jailbreakd`. Its entry point still called
+  `crashreporter_start` from the now-excluded donor reporter; its XPC server
+  used manual `xpc_retain`/`xpc_release` while compiling with Objective-C
+  ARC, which the iOS 26.2 SDK disallows. The donor reporter invocation is
+  omitted rather than reintroducing its conflicting ABI and unsafe panic
+  path; the XPC daemon now relies on ARC block capture for async replies.
+  These changes require another macOS build for confirmation.
 
 These are **partial compiler results**, not a successful BaseBin/Xcode
 build. No usable RootHide IPA has been produced, and the guarded branch

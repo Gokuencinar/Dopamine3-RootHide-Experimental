@@ -8,6 +8,7 @@
 // The hidden RootHide container has no /usr/lib fakelib mount. Resolve the
 // injected hook using the active jailbreak root, for both spawn and exec.
 const char *systemhook_dylib_path(void);
+bool systemhook_is_roothide_root_path(const char *root);
 #define HOOK_DYLIB_PATH systemhook_dylib_path()
 
 typedef enum 

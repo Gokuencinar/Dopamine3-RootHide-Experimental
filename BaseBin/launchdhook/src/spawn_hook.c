@@ -12,7 +12,9 @@
 #include "jbserver/jbserver_local.h"
 #include "hookd_provider.h"
 #include <libjailbreak/roothider.h>
+#include <libjailbreak/jbroot.h>
 #include <errno.h>
+#include <dlfcn.h>
 extern char **environ;
 
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
@@ -61,11 +63,28 @@ void early_boot_done(void)
 	gInEarlyBoot = false;
 }
 
+static bool roothide_launchdhook_origin_verified(void)
+{
+	// During userspace reboot the brand may not be restored yet. The root
+	// string alone is not proof of RootHide: require that the *loaded*
+	// launchdhook image resides in that exact validated bootstrap directory.
+	const char *root = get_jbroot();
+	if (!systemhook_is_roothide_root_path(root)) return false;
+	Dl_info image = {0};
+	if (!dladdr((const void *)&roothide_launchdhook_origin_verified, &image) || !image.dli_fname) return false;
+	static const char suffix[] = "/basebin/launchdhook.dylib";
+	const size_t rootLength = strlen(root);
+	const size_t imageLength = strlen(image.dli_fname);
+	if (rootLength >= PATH_MAX || imageLength != rootLength + sizeof(suffix) - 1) return false;
+	return !memcmp(image.dli_fname, root, rootLength) &&
+	       !strcmp(image.dli_fname + rootLength, suffix);
+}
+
 void ensure_fakelib_mounted(void)
 {
 	// RootHide reinjects from its private .jbroot. Mounting fakelib over
 	// /usr/lib would expose it and is only needed by stock Dopamine.
-	if (roothide_is_active()) return;
+	if (roothide_is_active() || roothide_launchdhook_origin_verified()) return;
 	struct statfs fsb;
 	if (statfs("/usr/lib", &fsb) != 0) return;
 	if (strcmp(fsb.f_mntonname, "/usr/lib") != 0) {

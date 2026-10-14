@@ -147,6 +147,7 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn('${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}', workflow)
         self.assertIn('[[ -f BaseBin/libjailbreak/src/roothider.h ]]', workflow)
         self.assertIn("id: roothide_port", workflow)
+        self.assertIn("ROOTHIDE_EXPERIMENTAL_BUILD: ${{ steps.roothide_port.outputs.is_port == 'true' && '1' || '0' }}", workflow)
         self.assertNotIn("!startsWith(github.ref_name", workflow)
 
     def test_root_hide_skips_stock_fakelib_and_protection(self) -> None:
