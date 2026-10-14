@@ -83,6 +83,15 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn('#include "log.h"', source)
         self.assertIn("JBLogDebug(", source)
 
+    def test_dopamine3_owns_crashreporter_without_incompatible_roothide_abi(self) -> None:
+        makefile = self.source("BaseBin/libjailbreak/Makefile")
+        header = self.source("BaseBin/libjailbreak/src/roothider.h")
+        launchd_header = self.source("BaseBin/launchdhook/src/crashreporter.h")
+        self.assertIn("$(filter-out src/roothider/crashreporter.m,", makefile)
+        self.assertNotIn('#include "roothider/crashreporter.h"', header)
+        self.assertIn("void crashreporter_pause(void);", launchd_header)
+        self.assertIn("void crashreporter_resume(void);", launchd_header)
+
     def test_stock_bootstraps_have_pinned_content_hashes(self) -> None:
         script = self.source("Application/Dopamine/Resources/download_bootstraps.sh")
         self.assertIn("a99b39bb0344ee3b42bb961325038dceae7daaec500976f3b822cf36cccf020a", script)

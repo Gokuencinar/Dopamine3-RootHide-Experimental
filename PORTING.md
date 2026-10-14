@@ -54,12 +54,24 @@ compiled or validated on hardware in this workspace.
 
 The experimental tree is backed up in the **private**
 `Gokuencinar/Dopamine3-RootHide-Experimental` repository on branch
-`roothide-dopamine3-integration`. GitHub Actions run
-`38482080417` failed **before a macOS runner started**: GitHub reported
-that recent account payments failed or the Actions spending limit must be
-increased. There are no Xcode compiler logs, build artifacts, or executed
-workflow steps from this run. Billing changes require the account owner;
-do not interpret the job failure as a compiler result.
+`roothide-dopamine3-integration`. An earlier GitHub Actions attempt
+(`38482080417`) reported a billing/spending-limit restriction. Subsequent
+attempts **did start a real macOS runner** without any billing changes:
+
+- Run `38485486288` built dependencies and started BaseBin compilation,
+  but `libjailbreak` failed on an undeclared logging function and invalid
+  CoreSymbolication reference checks. Commit `1b76080` corrected these.
+- Run `38486441884`, at `1b76080`, advanced through `libjailbreak` and
+  failed while compiling `launchdhook`: the RootHide 2 crash reporter
+  header redefined Dopamine 3's state enum and declared incompatible
+  `crashreporter_pause` / `crashreporter_resume` signatures. The donor
+  implementation also exported these conflicting names. This revision
+  removes its unused source from `libjailbreak` and the donor header from
+  the public RootHide header, retaining Dopamine 3's own launchd reporter.
+
+These are **partial compiler results**, not a successful BaseBin/Xcode
+build. No usable RootHide IPA has been produced, and the guarded branch
+must remain compile-only even if all source targets eventually build.
 
 Static review corrected a first-run state bug: both bundled RootHide
 `prep_bootstrap.sh` scripts can delete themselves on success. Marker

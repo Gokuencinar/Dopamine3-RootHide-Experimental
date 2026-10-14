@@ -9,7 +9,10 @@ LDFLAGS = -larchive -lbsm -L../.build -F ../_external/frameworks -lchoma
 
 # Clang handles both target architectures when linking the C++ source with
 # the Objective-C and C sources; compiling one multi-arch .o would not work.
-ROOTHIDE_SOURCES = $(wildcard src/roothider/*.c src/roothider/*.m src/roothider/*.cpp)
+# Dopamine 3's launchdhook already owns the crash reporter. The RootHide 2
+# copy exports the same function names with an incompatible pause/resume ABI;
+# do not link a second crash reporter into libjailbreak.
+ROOTHIDE_SOURCES = $(filter-out src/roothider/crashreporter.m,$(wildcard src/roothider/*.c src/roothider/*.m src/roothider/*.cpp))
 LDFLAGS += -lc++
 
 sign: $(TARGET)
