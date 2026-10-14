@@ -10,7 +10,11 @@ XPF_CFLAGS = -DUSE_COMMONCRYPTO -DUSE_LIBCOMPRESSION -DiOS10 -DDER_MULTIBYTE_TAG
 XPF_DEPS = $(filter-out ../XPF/external/img4lib/libvfs/vfs_lzvn.c, $(wildcard ../XPF/external/img4lib/lzss.c ../XPF/external/img4lib/libvfs/*.c ../XPF/external/img4lib/libDER/*.c))
 
 CFLAGS = $(XPF_CFLAGS) $(CHOMA_CFLAGS) -framework Security -framework Foundation -framework CoreServices -framework IOKit -framework IOSurface -framework Security -framework IOMobileFramebuffer -framework LocalAuthentication -weak_framework CoreGraphics -weak_framework ImageIO -I../.include -I./src -I./src/ui-stub -I../../Application/Dopamine/Jailbreak -I../../Application/Dopamine/Extensions -isysroot $(shell xcrun --sdk iphoneos --show-sdk-path) -arch arm64 -Wno-availability -miphoneos-version-min=15.0 -fobjc-arc -I$(shell brew --prefix)/opt/libarchive/include -Iexternal/include -D BUILD_STANDALONE=$(BUILD_STANDALONE)
-LDFLAGS = -L../.build -larchive -lbsm -lcompression -lMobileGestalt -F ../_external/frameworks
+# This standalone CLI compiles Dopamine's flat libjailbreak sources, but the
+# RootHide port's trust/dyld routines reside in libjailbreak/src/roothider/*
+# and are deliberately built into libjailbreak.dylib instead of duplicated
+# here. Resolve them from the sibling library staged in BaseBin/.build.
+LDFLAGS = -L../.build -ljailbreak -larchive -lbsm -lcompression -lMobileGestalt -F ../_external/frameworks
 
 sign: $(TARGET)
 	@ldid -Cadhoc -Sentitlements.plist $<

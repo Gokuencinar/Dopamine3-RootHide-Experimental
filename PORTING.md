@@ -78,6 +78,18 @@ attempts **did start a real macOS runner** without any billing changes:
   path; the XPC daemon now relies on ARC block capture for async replies.
   These changes require another macOS build for confirmation.
 
+Independent link-graph review found that the packaged `BaseBin/dopamine`
+command-line executable compiled the original flat libjailbreak sources but
+did not link the RootHide routines in the sibling `libjailbreak.dylib`.
+It now links `-ljailbreak` from the existing BaseBin staging directory;
+tests assert the missing `ensure_dyld_trustcache`/`exec_set_patch` dependency
+and adjacent `@loader_path` packaging. This is a build dependency fix, not
+a claim that the legacy CLI is a RootHide installer: its `install` and
+`activate` subcommands are still stock Dopamine/Corellium flows, and the
+guarded RootHide app installer does not call them. Framework references for
+iOS targets now use the iPhoneOS `SDKROOT` instead of incorrectly selecting
+IOKit from the macOS SDK. Both changes await validation in Xcode CI.
+
 These are **partial compiler results**, not a successful BaseBin/Xcode
 build. No usable RootHide IPA has been produced, and the guarded branch
 must remain compile-only even if all source targets eventually build.
