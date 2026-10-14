@@ -63,6 +63,9 @@ void early_boot_done(void)
 
 void ensure_fakelib_mounted(void)
 {
+	// RootHide reinjects from its private .jbroot. Mounting fakelib over
+	// /usr/lib would expose it and is only needed by stock Dopamine.
+	if (roothide_is_active()) return;
 	struct statfs fsb;
 	if (statfs("/usr/lib", &fsb) != 0) return;
 	if (strcmp(fsb.f_mntonname, "/usr/lib") != 0) {

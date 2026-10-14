@@ -4,7 +4,11 @@
 #include "private.h"
 #include "inline.h"
 
-#define HOOK_DYLIB_PATH "/usr/lib/systemhook.dylib"
+#define STOCK_HOOK_DYLIB_PATH "/usr/lib/systemhook.dylib"
+// The hidden RootHide container has no /usr/lib fakelib mount. Resolve the
+// injected hook using the active jailbreak root, for both spawn and exec.
+const char *systemhook_dylib_path(void);
+#define HOOK_DYLIB_PATH systemhook_dylib_path()
 
 typedef enum 
 {

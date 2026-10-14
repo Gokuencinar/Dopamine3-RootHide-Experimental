@@ -32,6 +32,18 @@ PINNED_RESOURCES = {
     "roothide_zebra.deb": "ca82c18256e19ff78af3e53308d53f047a2d429cb7e025c892377abe4d2e7825",
 }
 
+# BaseBin/dyldhook/Makefile builds all six variants and BaseBin/Makefile
+# copies dyldhook/*.dylib into .build before creating basebin.tar. There is
+# no single "dyldhook.dylib" in the archive.
+REQUIRED_DYLDHOOK = (
+    "dyldhook_merge.arm64e.iOS15.dylib",
+    "dyldhook_merge.arm64.iOS15.dylib",
+    "dyldhook_merge.arm64e.iOS16-17.dylib",
+    "dyldhook_merge.arm64.iOS16-17.dylib",
+    "dyldhook_merge.arm64e.iOS18+.dylib",
+    "dyldhook_merge.arm64.iOS18+.dylib",
+)
+
 REQUIRED_BASEBIN = (
     "libjailbreak.dylib",
     "launchdhook.dylib",
@@ -40,6 +52,10 @@ REQUIRED_BASEBIN = (
     "rootlesshooks.dylib",
     "hookd",
     "jbctl",
+    "bootstrapper",
+    "dopamine",
+    "jailbreakd",
+    *REQUIRED_DYLDHOOK,
     "basebin.tc",
 )
 

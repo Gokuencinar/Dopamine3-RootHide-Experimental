@@ -31,6 +31,21 @@ jobs:
         with:
             submodules: recursive
 
+      # github.ref_name is "<number>/merge" in pull_request runs. Detect the
+      # actual checked-out port as well as its branch, so a RootHide PR can
+      # never silently publish an ordinary artifact named "Dopamine".
+      - name: Classify experimental RootHide sources
+        id: roothide_port
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" == roothide-* ]] ||
+             [[ -f BaseBin/libjailbreak/src/roothider.h ]]; then
+            echo 'is_port=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'is_port=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Procursus
         uses: dhinakg/procursus-action@4526d5e64410da26bea8073926c0bf8e779293f1
         with:
@@ -42,6 +57,8 @@ jobs:
           echo "PATH=$(brew --prefix make)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
       - name: Install THEOS
+        env:
+          RH3_PORT: ${{ steps.roothide_port.outputs.is_port }}
         run: |
           set -euo pipefail
           export BASEDIR="$(pwd)"
@@ -52,7 +69,7 @@ jobs:
           # Keep official Theos for the upstream Dopamine branches.
           THEOS_REPO=theos/theos
           THEOS_REV=304e0799973e8145f32e4ca2de6c747a84b758ce
-          if [[ "$GITHUB_REF_NAME" == roothide-* ]]; then
+          if [[ "$RH3_PORT" == true ]]; then
             THEOS_REPO=roothide/theos
             THEOS_REV=cfba89a53a05b4a1b822121158acc3669c20602f
           fi
@@ -112,7 +129,7 @@ jobs:
           gmake -j$(sysctl -n hw.logicalcpu) NIGHTLY=1
 
       - name: Check RootHide binary architecture slices
-        if: startsWith(github.ref_name, 'roothide-')
+        if: steps.roothide_port.outputs.is_port == 'true'
         run: |
           set -euo pipefail
           for binary in libjailbreak.dylib launchdhook.dylib systemhook.dylib roothidehooks.dylib rootlesshooks.dylib; do
@@ -128,14 +145,14 @@ jobs:
       # Save it in a plainly quarantined diagnostic artifact so developers can
       # inspect linker output without distributing it as a jailbreak release.
       - name: Inspect quarantined RootHide build
-        if: startsWith(github.ref_name, 'roothide-')
+        if: steps.roothide_port.outputs.is_port == 'true'
         run: |
           set -euo pipefail
           python3 tools/verify_roothide_build.py --ipa Application/Dopamine.ipa --json | tee roothide-build-inspection.json
           printf 'ROOT HIDE 3: COMPILE-ONLY, NOT INSTALLABLE AS ROOTHIDE\nCommit: %s\nActivation: DISABLED\nRuntime/device verification: NONE\n' "$GITHUB_SHA" > ROOT_HIDE_DO_NOT_INSTALL.txt
 
       - name: Upload quarantined RootHide compile artifact
-        if: startsWith(github.ref_name, 'roothide-')
+        if: steps.roothide_port.outputs.is_port == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: RootHide3-COMPILE-ONLY-NOT-FOR-INSTALL
@@ -150,12 +167,12 @@ jobs:
       # Compile first so early RootHide port errors are visible in CI, but
       # never upload an unverified stock artifact as a RootHide release.
       - name: Check RootHide port prerequisites before upload
-        if: startsWith(github.ref_name, 'roothide-')
+        if: steps.roothide_port.outputs.is_port == 'true'
         run: python3 tools/roothide_port_audit.py --strict
 
       - name: Upload Artifact
         # Never label the stock IPA as a verified RootHide build.
-        if: ${{ !startsWith(github.ref_name, 'roothide-') }}
+        if: steps.roothide_port.outputs.is_port == 'false'
         id: dopamine-latest-upload
         uses: actions/upload-artifact@v4
         with:

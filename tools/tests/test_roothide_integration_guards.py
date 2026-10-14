@@ -54,6 +54,16 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn("if ([DOBootstrapper rootHidePortEnabled]) return;", manager)
         self.assertIn("![DOBootstrapper rootHidePortEnabled] &&", settings)
 
+    def test_failed_removal_preserves_recovery_state_without_reboot(self) -> None:
+        source = self.source("Application/Dopamine/UI/Settings/DOSettingsController.m")
+        start = source.index("- (void)removeJailbreakPressed")
+        end = source.index("- (void)resetSettingsPressed", start)
+        removal = source[start:end]
+        self.assertIn("NSError *deleteError = [[DOEnvironmentManager sharedManager] deleteBootstrap]", removal)
+        self.assertIn("if (deleteError) {", removal)
+        self.assertLess(removal.index("if (deleteError) {"), removal.index("return;"))
+        self.assertLess(removal.index("return;"), removal.index("reboot];"))
+
     def test_hidden_bootstrap_disables_stock_procursus_repositories(self) -> None:
         bootstrap = self.source("Application/Dopamine/Jailbreak/DOBootstrapper.m")
         self.assertIn('@"etc/apt/sources.list.d/procursus.sources"', bootstrap)
@@ -129,7 +139,15 @@ class RootHideGuardTests(unittest.TestCase):
         workflow = self.source(".github/workflows/main.yml")
         self.assertIn("RootHide3-COMPILE-ONLY-NOT-FOR-INSTALL", workflow)
         self.assertIn("python3 tools/roothide_port_audit.py --strict", workflow)
-        self.assertIn("if: ${{ !startsWith(github.ref_name, 'roothide-') }}", workflow)
+        self.assertIn("if: steps.roothide_port.outputs.is_port == 'false'", workflow)
+        self.assertIn("if: steps.roothide_port.outputs.is_port == 'true'", workflow)
+
+    def test_ci_quarantines_port_from_pull_request_merge_refs(self) -> None:
+        workflow = self.source(".github/workflows/main.yml")
+        self.assertIn('${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}', workflow)
+        self.assertIn('[[ -f BaseBin/libjailbreak/src/roothider.h ]]', workflow)
+        self.assertIn("id: roothide_port", workflow)
+        self.assertNotIn("!startsWith(github.ref_name", workflow)
 
     def test_root_hide_skips_stock_fakelib_and_protection(self) -> None:
         source = self.source("Application/Dopamine/Jailbreak/DOJailbreaker.m")
@@ -146,10 +164,29 @@ class RootHideGuardTests(unittest.TestCase):
         self.assertIn("if (!ranInitialSetup && ![fm fileExistsAtPath:marker])", source)
         self.assertIn("if (ranInitialSetup) {", source)
 
+    def test_new_root_records_ownership_before_extracting_archive(self) -> None:
+        source = self.source("Application/Dopamine/Jailbreak/DOBootstrapper.m")
+        start = source.index("- (NSError *)rh3CreateRoot:")
+        end = source.index("- (NSError *)rh3RerandomizeRoot:", start)
+        creation = source[start:end]
+        self.assertLess(creation.index('RH3WritePendingState(root, @"creating")'),
+                        creation.index("decompressZstd:archive"))
+        self.assertIn('@[@"creating", @"layout", @"prepared", @"script-complete"]', source)
+
     def test_macos_ci_unpacks_xz_sdk_with_correct_decoder(self) -> None:
         workflow = self.source(".github/workflows/main.yml")
         self.assertIn('tar -xJf "$THEOS/sdks/iPhoneOS16.5.sdk.tar.xz"', workflow)
         self.assertNotIn("gunzip $THEOS/sdks/iPhoneOS16.5.sdk.tar.xz", workflow)
+
+    def test_xcode_momentarius_titan_frameworks_do_not_pin_host_sdk_version(self) -> None:
+        project = self.source("Application/Dopamine.xcodeproj/project.pbxproj")
+        for identifier in ("2F11A328301C006D00C1C9F0", "2F11A32A301C007500C1C9F0",
+                           "3165D0063020A584002737DA"):
+            with self.subTest(identifier=identifier):
+                reference = next(line for line in project.splitlines()
+                                 if line.strip().startswith(identifier + " /*"))
+                self.assertNotRegex(reference, r"MacOSX[0-9]+(?:\.[0-9]+)?\.sdk")
+                self.assertIn("System/Library/Frameworks/", reference)
 
     def test_roothide_assets_have_expected_hashes_and_are_in_app_target(self) -> None:
         hashes = {

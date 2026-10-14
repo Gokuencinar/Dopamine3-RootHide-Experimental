@@ -173,7 +173,7 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
                          S_ISREG(installedInfo.st_mode) &&
                          [[NSString stringWithContentsOfFile:ownMarker
                                                     encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"3"];
-        if (!installed && !([@[@"layout", @"prepared", @"script-complete"] containsObject:pending])) {
+        if (!installed && !([@[@"creating", @"layout", @"prepared", @"script-complete"] containsObject:pending])) {
             if (error) *error = RH3Error(BootstrapErrorCodeFailedReplacing,
                 [NSString stringWithFormat:@"Unowned or unknown .jbroot at %@; refusing to adopt or delete it", root]);
             return nil;
@@ -409,6 +409,12 @@ static NSError *RH3Error(BootstrapErrorCode code, NSString *message)
 
     if (![fm createDirectoryAtPath:root withIntermediateDirectories:NO
                        attributes:@{NSFilePosixPermissions:@0755} error:&error]) return error;
+    // Mark ownership before extraction: an interrupted install must not be
+    // indistinguishable from an unowned RootHide 2 container. Only a fully
+    // linked 'creating' root is resumed by rootHideExistingRootWithError:;
+    // incomplete layouts stay untouched for explicit manual recovery.
+    error = RH3WritePendingState(root, @"creating");
+    if (error) goto cleanup_root;
     if (chown(root.fileSystemRepresentation, 0, 0) != 0) {
         error = RH3Error(BootstrapErrorCodeFailedExtracting,
                          [NSString stringWithFormat:@"chown hidden root failed: %s", strerror(errno)]);

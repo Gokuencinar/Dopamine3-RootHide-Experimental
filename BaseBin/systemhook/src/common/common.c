@@ -17,6 +17,38 @@
 #include <libjailbreak/hookd.h>
 #include <libkern/OSCacheControl.h>
 
+static bool is_roothide_root_path(const char *root)
+{
+	static const char prefix[] = "/var/containers/Bundle/Application/.jbroot-";
+	static const char privatePrefix[] = "/private/var/containers/Bundle/Application/.jbroot-";
+	const char *brand = NULL;
+	if (!root) return false;
+	if (!strncmp(root, prefix, sizeof(prefix) - 1)) {
+		brand = root + sizeof(prefix) - 1;
+	}
+	else if (!strncmp(root, privatePrefix, sizeof(privatePrefix) - 1)) {
+		brand = root + sizeof(privatePrefix) - 1;
+	}
+	if (!brand || strlen(brand) != 16) return false;
+	for (size_t i = 0; i < 16; i++) {
+		if (!((brand[i] >= '0' && brand[i] <= '9') ||
+		      (brand[i] >= 'A' && brand[i] <= 'F'))) return false;
+	}
+	return true;
+}
+
+const char *systemhook_dylib_path(void)
+{
+	if (!is_roothide_root_path(get_jbroot())) return STOCK_HOOK_DYLIB_PATH;
+	// JBROOT_PATH uses stack storage. Copy it into per-thread storage before
+	// returning the selected path to callers in launchd and systemhook.
+	const char *hiddenPath = JBROOT_PATH("/basebin/systemhook.dylib");
+	static _Thread_local char resolvedPath[PATH_MAX];
+	if (!hiddenPath || strlen(hiddenPath) >= sizeof(resolvedPath)) return STOCK_HOOK_DYLIB_PATH;
+	strlcpy(resolvedPath, hiddenPath, sizeof(resolvedPath));
+	return resolvedPath;
+}
+
 bool string_has_prefix(const char *str, const char* prefix)
 {
 	if (!str || !prefix) {
@@ -146,7 +178,7 @@ static kSpawnConfig spawn_config_for_executable(const char* path, char *const ar
 }
 
 // 1. Ensure the binary about to be spawned and all of it's dependencies are trust cached
-// 2. Insert "DYLD_INSERT_LIBRARIES=/usr/lib/systemhook.dylib" into all binaries spawned
+// 2. Insert the active bootstrap's systemhook.dylib into all binaries spawned
 // 3. Increase Jetsam limit to more sane value (Multipler defined as JETSAM_MULTIPLIER)
 // 4. Fix spawning as root via persona entitlement on iOS 17.6+
 
@@ -170,6 +202,7 @@ static int spawn_exec_hook_common(bool isExec,
 	if (desc) attr = desc->attrp;
 
 	kSpawnConfig spawnConfig = spawn_config_for_executable(path, argv);
+	const char *hookDylibPath = HOOK_DYLIB_PATH;
 
 	if (spawnConfig & kSpawnConfigTrust) {
 		// Upload binary to trustcache if needed
@@ -180,7 +213,7 @@ static int spawn_exec_hook_common(bool isExec,
 	__block bool systemHookAlreadyInserted = false;
 	if (existingLibraryInserts) {
 		string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
-			if (!strcmp(existingLibraryInsert, HOOK_DYLIB_PATH)) {
+			if (!strcmp(existingLibraryInsert, hookDylibPath)) {
 				systemHookAlreadyInserted = true;
 			}
 		});
@@ -226,7 +259,7 @@ static int spawn_exec_hook_common(bool isExec,
 			}
 		}
 
-		if (access(HOOK_DYLIB_PATH, F_OK) != 0) {
+		if (access(hookDylibPath, F_OK) != 0) {
 			// If the hook dylib doesn't exist, don't try to inject it (would crash the process)
 			shouldInsertJBEnv = false;
 			break;
@@ -307,8 +340,8 @@ static int spawn_exec_hook_common(bool isExec,
 
 		if (shouldInsertJBEnv) {
 			if (!systemHookAlreadyInserted) {
-				char newLibraryInsert[strlen(HOOK_DYLIB_PATH) + (existingLibraryInserts ? (strlen(existingLibraryInserts) + 1) : 0) + 1];
-				strcpy(newLibraryInsert, HOOK_DYLIB_PATH);
+				char newLibraryInsert[strlen(hookDylibPath) + (existingLibraryInserts ? (strlen(existingLibraryInserts) + 1) : 0) + 1];
+				strcpy(newLibraryInsert, hookDylibPath);
 				if (existingLibraryInserts) {
 					strcat(newLibraryInsert, ":");
 					strcat(newLibraryInsert, existingLibraryInserts);
@@ -318,7 +351,7 @@ static int spawn_exec_hook_common(bool isExec,
 		}
 		else {
 			if (systemHookAlreadyInserted && existingLibraryInserts) {
-				if (!strcmp(existingLibraryInserts, HOOK_DYLIB_PATH)) {
+				if (!strcmp(existingLibraryInserts, hookDylibPath)) {
 					envbuf_unsetenv(&envc, "DYLD_INSERT_LIBRARIES");
 				}
 				else {
@@ -327,7 +360,7 @@ static int spawn_exec_hook_common(bool isExec,
 
 					__block bool first = true;
 					string_enumerate_components(existingLibraryInserts, ":", ^(const char *existingLibraryInsert, bool *stop) {
-						if (strcmp(existingLibraryInsert, HOOK_DYLIB_PATH) != 0) {
+						if (strcmp(existingLibraryInsert, hookDylibPath) != 0) {
 							if (first) {
 								strcpy(newLibraryInsert, existingLibraryInsert);
 								first = false;

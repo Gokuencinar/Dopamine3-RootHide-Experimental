@@ -720,7 +720,19 @@
 {
     UIAlertController *confirmationAlertController = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Alert_Remove_Jailbreak_Title") message:DOLocalizedString(@"Alert_Remove_Jailbreak_Pressed_Body") preferredStyle:UIAlertControllerStyleAlert];
     UIAlertAction *uninstallAction = [UIAlertAction actionWithTitle:DOLocalizedString(@"Button_Continue") style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-        [[DOEnvironmentManager sharedManager] deleteBootstrap];
+        NSError *deleteError = [[DOEnvironmentManager sharedManager] deleteBootstrap];
+        if (deleteError) {
+            // A RootHide removal can leave owned containers in quarantine for
+            // recovery. Never reboot or clear the active root after failure.
+            UIAlertController *errorAlert = [UIAlertController
+                alertControllerWithTitle:DOLocalizedString(@"Alert_Remove_Jailbreak_Title")
+                               message:deleteError.localizedDescription
+                        preferredStyle:UIAlertControllerStyleAlert];
+            [errorAlert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                            style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:errorAlert animated:YES completion:nil];
+            return;
+        }
         if ([DOEnvironmentManager sharedManager].isJailbroken) {
             [[DOEnvironmentManager sharedManager] reboot];
         }

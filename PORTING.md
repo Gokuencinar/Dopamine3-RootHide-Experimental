@@ -83,13 +83,33 @@ initialization from the ordinary Dopamine protection/fakelib path.
 The macOS CI workflow now unpacks the iOS SDK's `.tar.xz` with XZ,
 not `gunzip`.
 
-**Still unresolved before enabling RootHide:** Re-randomizing the hidden
-root must repair *all* links and install-time paths, not just the AppGroup
-backlink; the RootHide manager/libroot/libkrw/basebin-link dependency
-sequence requires a full compatibility audit. Incomplete first setups
-remain quarantined rather than automatically deleted, and need an
-explicit, safe recovery flow. Kernel offsets, dyld vtable hooks,
-launchd state, signing, and reboot flows all need device testing.
+Subsequent source work retargets RootHide-owned absolute links during
+re-randomization with rollback, stages explicit libroot/libkrw/basebin-link
+file payloads and prevents settings from creating `/var/jb`. New roots
+now record a `creating` ownership state before lengthy extraction. A crash
+with an intact pair of root/AppGroup links can resume; an incomplete layout
+is deliberately left for explicit manual recovery, not auto-deleted.
+Failed uninstall operations report their error and do not reboot or clear
+the active root state. These are source protections, **not runtime proof**.
+
+The CI workflow now classifies an experimental RootHide build using both
+the checked-out source and the source branch (including pull requests),
+so PR merge refs do not bypass the quarantined artifact and strict audit.
+Xcode project references used by momentarius/Titan no longer hardcode
+macOS SDK version numbers. Kernel offsets, dyld hooks, package-manager
+integration, launchd state, signatures and reboot flows still need live
+device testing. No interrupted-creation cleanup may automatically delete
+an unrecognized RootHide 2 container.
+
+The launchd userspace-reboot path now avoids mounting stock fakelib when
+RootHide is active. Spawn/exec injection chooses the hidden bootstrap's
+`basebin/systemhook.dylib` instead of the inaccessible stock
+`/usr/lib/systemhook.dylib`, while preserving the stock Dopamine path.
+Source-level checks cover both branches; process injection after reboot
+still requires an actual iPhone test. The compile-only IPA verifier now
+requires the packaged `bootstrapper`, `dopamine`, `jailbreakd` executables
+and all six expected dyldhook binaries, with negative tests for missing or
+malformed Mach-O payloads.
 
 ## Reproducible macOS diagnostic build
 
@@ -128,10 +148,11 @@ not published for RootHide branches. The strict publish gate additionally
 requires reviewed activation and genuine device evidence following
 `validation/README.md`; it intentionally fails until then.
 
-The Windows source-work machine has no Xcode/macOS compiler. A functioning
-macOS runner (or resolving the GitHub-hosted runner billing problem) is
-required before any actual IPA can be produced. No billing modification
-is performed by this project.
+The Windows source-work machine has no Xcode/macOS compiler. A GitHub-hosted
+macOS runner has since executed the BaseBin build, but stopped at source
+errors before producing an IPA. Another passing macOS build and verifier
+run are required before any compile-only IPA can be inspected. No billing
+modification is performed by this project.
 
 ## Integration boundaries
 
